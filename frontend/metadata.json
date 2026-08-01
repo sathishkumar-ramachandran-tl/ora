@@ -1,0 +1,7 @@
+{
+  "name": "Sindhai",
+  "description": "The neural operating system for high-performance cognition and execution.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
