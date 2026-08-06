@@ -1,0 +1,116 @@
+"""Seed data for the 5 launch tiers. A `null` limit means unlimited.
+
+These are starting defaults, not hardcoded enforcement — once seeded into the
+`plans` table, admins tune them via the /api/v2/billing/admin/plans endpoints
+without touching this file or redeploying.
+"""
+
+DEFAULT_TRIAL_DAYS = 45  # within the user-requested 30-60 day range; adjustable via PlatformSetting
+
+PLAN_DEFAULTS = [
+    {
+        "key": "free_trial",
+        "name": "Free Trial",
+        "description": f"{DEFAULT_TRIAL_DAYS}-day trial of Freelancer-level limits. Extendable by an admin.",
+        "scope": "personal",
+        "price_monthly_usd": 0.0,
+        "price_yearly_usd": 0.0,
+        "included_seats": 1,
+        "per_seat_price_usd": 0.0,
+        "sort_order": 0,
+        "limits": {
+            "workspaces": 2,
+            "projects": 3,
+            "tasks": 50,
+            "ai_calls_per_month": 100,
+            "module_generations_per_month": 1,
+            "storage_mb": 100,
+            "team_members": None,
+            "custom_roles": None,
+        },
+    },
+    {
+        "key": "student",
+        "name": "Student",
+        "description": "Discounted personal plan for verified students.",
+        "scope": "personal",
+        "price_monthly_usd": 4.0,
+        "price_yearly_usd": 40.0,
+        "included_seats": 1,
+        "per_seat_price_usd": 0.0,
+        "sort_order": 1,
+        "limits": {
+            "workspaces": 2,
+            "projects": 10,
+            "tasks": 500,
+            "ai_calls_per_month": 300,
+            "module_generations_per_month": 5,
+            "storage_mb": 1024,
+            "team_members": None,
+            "custom_roles": None,
+        },
+    },
+    {
+        "key": "freelancer",
+        "name": "Freelancer",
+        "description": "For solo professionals working across multiple personal workspaces.",
+        "scope": "personal",
+        "price_monthly_usd": 12.0,
+        "price_yearly_usd": 120.0,
+        "included_seats": 1,
+        "per_seat_price_usd": 0.0,
+        "sort_order": 2,
+        "limits": {
+            "workspaces": 4,
+            "projects": None,
+            "tasks": 2000,
+            "ai_calls_per_month": 1000,
+            "module_generations_per_month": 15,
+            "storage_mb": 5120,
+            "team_members": None,
+            "custom_roles": None,
+        },
+    },
+    {
+        "key": "startup",
+        "name": "Startup",
+        "description": "For small teams running a company workspace with real RBAC.",
+        "scope": "company",
+        "price_monthly_usd": 49.0,
+        "price_yearly_usd": 490.0,
+        "included_seats": 5,
+        "per_seat_price_usd": 8.0,
+        "sort_order": 3,
+        "limits": {
+            "workspaces": 2,
+            "projects": None,
+            "tasks": None,
+            "ai_calls_per_month": 5000,
+            "module_generations_per_month": 50,
+            "storage_mb": 51200,
+            "team_members": 15,
+            "custom_roles": 5,
+        },
+    },
+    {
+        "key": "enterprise",
+        "name": "Enterprise",
+        "description": "Unlimited usage, SSO, audit logs, and dedicated support. Custom contract.",
+        "scope": "company",
+        "price_monthly_usd": 0.0,  # custom — priced via sales, not self-serve checkout
+        "price_yearly_usd": 0.0,
+        "included_seats": 0,
+        "per_seat_price_usd": 0.0,
+        "sort_order": 4,
+        "limits": {
+            "workspaces": None,
+            "projects": None,
+            "tasks": None,
+            "ai_calls_per_month": None,
+            "module_generations_per_month": None,
+            "storage_mb": None,
+            "team_members": None,
+            "custom_roles": None,
+        },
+    },
+]

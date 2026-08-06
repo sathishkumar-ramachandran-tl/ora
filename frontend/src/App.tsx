@@ -6,28 +6,35 @@ import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { Company, Project, Task } from './types';
 import { LoginScreen } from './pages/auth/LoginScreen';
 import { Onboarding } from './pages/auth/Onboarding';
+import { VerifyEmailScreen } from './pages/auth/VerifyEmailScreen';
+import { OAuthCallback } from './pages/auth/OAuthCallback';
+import { ResetPassword } from './pages/auth/ResetPassword';
 import { PersonalLayout } from './layouts/PersonalLayout';
 import { CompanyLayout } from './layouts/CompanyLayout';
 
-import { Dashboard } from './components/Dashboard';
-import { AgileBoard } from './components/AgileBoard';
-import { InitiativeBoard } from './components/InitiativeBoard';
-import { KnowledgeGraph } from './components/KnowledgeGraph';
-import { IdeaBoard } from './components/IdeaBoard';
-import { CreateCompanyModal, CreateProjectModal } from './components/CreationModals';
-import { FocusTimer } from './components/FocusTimer';
-import { DocumentVault } from './components/DocumentVault';
-import { LiveVoiceAssistant } from './components/LiveVoiceAssistant';
-import { TeamManagement } from './components/TeamManagement';
+import { Dashboard } from './pages/shared/Dashboard';
+import { AgileBoard } from './features/board/AgileBoard';
+import { InitiativeBoard } from './features/ideas/InitiativeBoard';
+import { KnowledgeGraph } from './features/canvas/KnowledgeGraph';
+import { IdeaBoard } from './features/ideas/IdeaBoard';
+import { CreateCompanyModal, CreateProjectModal } from './components/shared/CreationModals';
+import { FocusTimer } from './features/schedule/FocusTimer';
+import { DocumentVault } from './features/documents/DocumentVault';
+import { LiveVoiceAssistant } from './features/chat/LiveVoiceAssistant';
+import { TeamManagement } from './features/team/TeamManagement';
 import { AdminConsole } from './pages/enterprise/AdminConsole';
 import { CompanyDashboard } from './pages/enterprise/CompanyDashboard';
 import { CompanyProjects } from './pages/enterprise/CompanyProjects';
-import { ScheduleView } from './components/ScheduleView';
-import { ChatInterface } from './components/ChatInterface';
+import { ScheduleView } from './features/schedule/ScheduleView';
+import { ChatInterface } from './features/chat/ChatInterface';
+import { ModuleMarketplace } from './features/modules/ModuleMarketplace';
 
 import { generateWeeklyScheduleAdvice } from './services/geminiService';
-import { fetchFullState, createCompany, createProject, addTasks } from './services/db';
+import { fetchFullState } from './api/workspace';
+import { createCompany, createProject } from './api/projects';
+import { addTasks } from './api/tasks';
 import { trackEvent } from './services/analytics';
+import { getMyOrganizations, Organization } from './api/org';
 
 const AppRoutes: React.FC = () => {
     const { user, workspace, isLoading } = useAuth();
@@ -37,6 +44,7 @@ const AppRoutes: React.FC = () => {
     const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
     const [selectedCompanyId, setSelectedCompanyId] = useState<string | null>(null);
     const [companies, setCompanies] = useState<Company[]>([]);
+    const [organization, setOrganization] = useState<Organization | null>(null);
     const [focusedTask, setFocusedTask] = useState<Task | null>(null);
     const [isVoiceActive, setIsVoiceActive] = useState(false);
 
@@ -51,6 +59,16 @@ const AppRoutes: React.FC = () => {
     useEffect(() => {
         if (workspace) loadData(workspace.id);
     }, [workspace]);
+
+    useEffect(() => {
+        if (workspace?.context === 'company' && workspace.organizationId) {
+            getMyOrganizations()
+                .then(orgs => setOrganization(orgs.find(o => o.id === workspace.organizationId) || null))
+                .catch(() => setOrganization(null));
+        } else {
+            setOrganization(null);
+        }
+    }, [workspace?.organizationId]);
 
     const loadData = async (workspaceId: string) => {
         try {
@@ -89,7 +107,7 @@ const AppRoutes: React.FC = () => {
 
     const handleOptimizeSchedule = async () => {
         trackEvent('AI_AGENT_START', { agent: 'Scheduler' });
-        setScheduleAdvice('Sindhai is analyzing your velocity and constraints…');
+        setScheduleAdvice('Ora is analyzing your velocity and constraints…');
         const advice = await generateWeeklyScheduleAdvice(companies, workspace?.persona);
         setScheduleAdvice(advice);
         trackEvent('AI_AGENT_COMPLETE', { agent: 'Scheduler' });
@@ -113,6 +131,7 @@ const AppRoutes: React.FC = () => {
         );
     }
     if (!user) return <LoginScreen />;
+    if (!user.email_verified) return <VerifyEmailScreen />;
     if (!user.is_onboarded || !workspace) return <Onboarding />;
 
     // Voice button (shared between layouts)
@@ -154,6 +173,18 @@ const AppRoutes: React.FC = () => {
                     {activeTab === 'ideas' && (
                         <IdeaBoard workspaceId={workspace.id} onCreateCompany={handleCreateCompany} />
                     )}
+                    {activeTab === 'modules' && (
+                        <ModuleMarketplace
+                            workspaceId={workspace.id}
+                            companies={companies}
+                            onCreateCompany={handleCreateCompany}
+                            onModuleInstalled={async (projectId) => {
+                                await loadData(workspace.id);
+                                setSelectedProjectId(projectId);
+                                setActiveTab('project');
+                            }}
+                        />
+                    )}
                     {activeTab === 'company' && currentCompany && (
                         <InitiativeBoard
                             company={currentCompany}
@@ -168,6 +199,7 @@ const AppRoutes: React.FC = () => {
                             companyMission={currentCompany.mission}
                             onUpdateProject={handleUpdateProject}
                             onStartFocus={setFocusedTask}
+                            onRequestRefresh={() => loadData(workspace.id)}
                         />
                     )}
                     {activeTab === 'schedule' && (
@@ -193,7 +225,14 @@ const AppRoutes: React.FC = () => {
 
     // Route by workspace context
     if (workspace.context === 'company') {
-        const mockOrg = { id: workspace.organizationId ?? workspace.id, name: workspace.name, role: 'admin' as const };
+        if (!organization) {
+            return (
+                <div className="min-h-screen bg-slate-900 flex items-center justify-center text-white">
+                    <Loader2 className="w-8 h-8 text-indigo-500 animate-spin mr-3" />
+                    <span className="text-lg">Loading organization…</span>
+                </div>
+            );
+        }
         const userInitials = (user.name || user.email || 'A')[0].toUpperCase();
 
         const CompanyContent = () => {
@@ -236,7 +275,7 @@ const AppRoutes: React.FC = () => {
                 );
             }
             if (activeTab === 'admin') {
-                return <AdminConsole />;
+                return <AdminConsole organizationId={organization.id} />;
             }
             // project drill-in reuses MainContent
             return (
@@ -247,6 +286,7 @@ const AppRoutes: React.FC = () => {
                             companyMission={currentCompany.mission}
                             onUpdateProject={handleUpdateProject}
                             onStartFocus={setFocusedTask}
+                            onRequestRefresh={() => loadData(workspace.id)}
                         />
                     )}
                 </div>
@@ -256,7 +296,7 @@ const AppRoutes: React.FC = () => {
         return (
             <>
                 <CompanyLayout
-                    organization={mockOrg}
+                    organization={organization}
                     activeTab={activeTab}
                     onTabChange={t => setActiveTab(t)}
                     headerActions={voiceButton}
@@ -303,7 +343,13 @@ const AppRoutes: React.FC = () => {
 const App: React.FC = () => (
     <BrowserRouter>
         <AuthProvider>
-            <AppRoutes />
+            <Routes>
+                {/* Public callback routes — handle their own redirect logic regardless of auth state */}
+                <Route path="/oauth/callback" element={<OAuthCallback />} />
+                <Route path="/reset-password" element={<ResetPassword />} />
+                {/* Everything else is the tab-state-driven app, gated by auth internally */}
+                <Route path="*" element={<AppRoutes />} />
+            </Routes>
         </AuthProvider>
     </BrowserRouter>
 );

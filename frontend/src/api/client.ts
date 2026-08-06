@@ -13,7 +13,7 @@ export const apiV2Client = axios.create({
 
 // Request Interceptor: Attach Token
 const attachToken = (config: any) => {
-    const token = localStorage.getItem('sindhai_auth_token');
+    const token = localStorage.getItem('ora_auth_token');
     if (token) {
         config.headers.Authorization = `Bearer ${token}`;
     }
@@ -23,12 +23,13 @@ const attachToken = (config: any) => {
 // Response Interceptor: Handle Auth Failures
 const handleAuthError = (error: any) => {
     if (error.response && error.response.status === 401) {
-        const url: string = error.config?.url || '';
-        // Skip auto-logout for auth endpoints (OTP login flow — 401 there means wrong code, not expired session)
-        const isAuthRoute = url.includes('/auth/request-otp') || url.includes('/auth/verify-otp') || url.includes('/auth/check-user');
-        if (!isAuthRoute) {
-            localStorage.removeItem('sindhai_auth_token');
-            localStorage.removeItem('sindhai_user_id');
+        // Only treat this as an expired/invalid session if the request actually carried
+        // a bearer token — a 401 from an unauthenticated call (e.g. wrong-password login)
+        // means "rejected", not "session expired", and shouldn't force-navigate the page.
+        const hadToken = !!error.config?.headers?.Authorization;
+        if (hadToken) {
+            localStorage.removeItem('ora_auth_token');
+            localStorage.removeItem('ora_user_id');
             window.location.href = '/';
         }
     }

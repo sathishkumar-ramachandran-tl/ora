@@ -40,7 +40,7 @@ export type StreamEvent =
   | { type: 'error'; message: string };
 
 function getToken(): string {
-  return localStorage.getItem('sindhai_auth_token') || '';
+  return localStorage.getItem('ora_auth_token') || '';
 }
 
 function authHeaders(): Record<string, string> {

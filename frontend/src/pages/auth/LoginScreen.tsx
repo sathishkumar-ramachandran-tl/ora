@@ -1,114 +1,165 @@
 import React, { useState } from 'react';
-import { Lock, Mail, Fingerprint, Loader2, ShieldCheck } from 'lucide-react';
+import { Lock, Mail, Loader2, User as UserIcon } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
-import { authApi } from '../../api/auth';
-import { useNavigate } from 'react-router-dom';
+import { login as loginRequest, register as registerRequest, forgotPassword, oauthLoginUrl } from '../../api/auth';
+import { AuthShell, GoogleIcon, MicrosoftIcon, authInputClass, authPrimaryButtonClass, authOAuthButtonClass } from './AuthShell';
+
+type Mode = 'login' | 'register' | 'forgot';
+
+const OAuthButton: React.FC<{ provider: 'google' | 'microsoft'; label: string }> = ({ provider, label }) => (
+  <a href={oauthLoginUrl(provider)} className={authOAuthButtonClass}>
+    {provider === 'google' ? <GoogleIcon /> : <MicrosoftIcon />}
+    {label}
+  </a>
+);
 
 export const LoginScreen: React.FC = () => {
   const { login } = useAuth();
-  const navigate = useNavigate();
 
-  const [step, setStep] = useState<'email' | 'otp'>('email');
+  const [mode, setMode] = useState<Mode>('login');
   const [email, setEmail] = useState('');
-  const [otp, setOtp] = useState('');
+  const [password, setPassword] = useState('');
+  const [name, setName] = useState('');
   const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const handleEmailSubmit = async (e: React.FormEvent) => {
+  const resetFeedback = () => { setError(''); setMessage(''); };
+
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    resetFeedback();
     setLoading(true);
-    setError('');
     try {
-        await authApi.requestOtp(email);
-        setStep('otp');
+      const { token, user } = await loginRequest(email, password);
+      await login(token, user);
     } catch (err: any) {
-        setError('Failed to send code. Please check email or try again.');
+      setError(err?.response?.data?.error || 'Invalid email or password.');
     } finally {
-        setLoading(false);
+      setLoading(false);
     }
   };
 
-  const handleOtpSubmit = async (e: React.FormEvent) => {
+  const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
+    resetFeedback();
     setLoading(true);
-    setError('');
     try {
-        const { token, user } = await authApi.verifyOtp(email, otp);
-        await login(token, user);
-        // Navigation handled by App.tsx observing user state
+      const { token, user } = await registerRequest(email, password, name.trim() || undefined);
+      await login(token, user);
+      // App.tsx gates unverified users into the verification screen automatically.
     } catch (err: any) {
-        setError('Invalid code or expired session.');
+      setError(err?.response?.data?.error || 'Could not create your account.');
     } finally {
-        setLoading(false);
+      setLoading(false);
     }
+  };
+
+  const handleForgot = async (e: React.FormEvent) => {
+    e.preventDefault();
+    resetFeedback();
+    setLoading(true);
+    try {
+      await forgotPassword(email);
+      setMessage('If that email has an account, a reset link is on its way.');
+    } catch {
+      setMessage('If that email has an account, a reset link is on its way.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const titles: Record<Mode, string> = {
+    login: 'Welcome back',
+    register: 'Create your account',
+    forgot: 'Reset your password',
+  };
+  const subtitles: Record<Mode, string> = {
+    login: 'Sign in to continue to Ora',
+    register: 'Get started with Ora, free',
+    forgot: "We'll email you a reset link",
   };
 
   return (
-    <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center p-4 relative overflow-hidden">
-      <div className="absolute top-0 left-0 w-full h-full overflow-hidden z-0">
-        <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-blue-600/10 rounded-full blur-3xl"></div>
-        <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-indigo-600/10 rounded-full blur-3xl"></div>
-      </div>
-
-      <div className="w-full max-w-md bg-slate-800/50 backdrop-blur-xl border border-slate-700 rounded-2xl shadow-2xl p-8 z-10">
-        <div className="text-center mb-8">
-          <div className="w-16 h-16 bg-slate-900 rounded-2xl flex items-center justify-center mx-auto mb-4 border border-slate-700 shadow-inner">
-            <Fingerprint className="w-8 h-8 text-blue-500" />
+    <AuthShell title={titles[mode]} subtitle={subtitles[mode]}>
+      {mode !== 'forgot' && (
+        <div className="space-y-2.5 mb-6">
+          <OAuthButton provider="google" label="Continue with Google" />
+          <OAuthButton provider="microsoft" label="Continue with Microsoft" />
+          <div className="flex items-center gap-3 pt-1">
+            <div className="h-px flex-1 bg-slate-200" />
+            <span className="text-[11px] uppercase tracking-wider text-slate-400">or</span>
+            <div className="h-px flex-1 bg-slate-200" />
           </div>
-          <h1 className="text-2xl font-bold text-white tracking-tight">Sindhai Cortex</h1>
-          <p className="text-slate-400 text-sm mt-2">Enterprise Access</p>
+        </div>
+      )}
+
+      <form onSubmit={mode === 'login' ? handleLogin : mode === 'register' ? handleRegister : handleForgot} className="space-y-4">
+        {mode === 'register' && (
+          <div>
+            <label className="block text-xs font-medium text-slate-600 mb-1.5">Name</label>
+            <div className="relative">
+              <UserIcon className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
+              <input
+                type="text" value={name} onChange={(e) => setName(e.target.value)}
+                className={authInputClass}
+                placeholder="Jane Doe"
+              />
+            </div>
+          </div>
+        )}
+
+        <div>
+          <label className="block text-xs font-medium text-slate-600 mb-1.5">Email</label>
+          <div className="relative">
+            <Mail className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
+            <input
+              type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+              className={authInputClass}
+              placeholder="you@example.com" autoFocus required
+            />
+          </div>
         </div>
 
-        {step === 'email' ? (
-            <form onSubmit={handleEmailSubmit} className="space-y-4">
-                <div>
-                     <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Email Identity</label>
-                    <div className="relative">
-                        <Mail className="absolute left-3 top-3.5 h-4 w-4 text-slate-500" />
-                        <input
-                            type="email"
-                            value={email}
-                            onChange={(e) => setEmail(e.target.value)}
-                            className="block w-full pl-10 pr-3 py-3 bg-slate-900/50 border border-slate-600 rounded-lg text-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
-                            placeholder="user@enterprise.com"
-                            autoFocus
-                            required
-                        />
-                    </div>
-                </div>
-                {error && <p className="text-xs text-red-400">{error}</p>}
-                <button type="submit" disabled={loading} className="w-full py-3 px-4 rounded-lg text-sm font-medium text-white bg-blue-600 hover:bg-blue-500 transition-all flex justify-center">
-                    {loading ? <Loader2 className="animate-spin w-4 h-4" /> : 'Request Access Code'}
-                </button>
-            </form>
-        ) : (
-            <form onSubmit={handleOtpSubmit} className="space-y-4">
-                <div>
-                   <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Security Token</label>
-                    <div className="relative">
-                        <Lock className="absolute left-3 top-3.5 h-4 w-4 text-slate-500" />
-                        <input
-                            type="text"
-                            inputMode="numeric"
-                            value={otp}
-                            onChange={(e) => setOtp(e.target.value)}
-                            className="block w-full pl-10 pr-3 py-3 bg-slate-900/50 border border-slate-600 rounded-lg text-white focus:border-blue-500 outline-none font-mono tracking-widest text-center text-lg"
-                            placeholder="000000"
-                            autoFocus
-                            required
-                        />
-                    </div>
-                </div>
-                {error && <p className="text-xs text-red-400">{error}</p>}
-                <button type="submit" disabled={loading} className="w-full py-3 px-4 rounded-lg text-sm font-medium text-white bg-blue-600 hover:bg-blue-500 transition-all flex justify-center">
-                    {loading ? <Loader2 className="animate-spin w-4 h-4" /> : 'Authenticate Session'}
-                </button>
-                <button type="button" onClick={() => setStep('email')} className="w-full text-xs text-slate-500 hover:text-slate-300">
-                    Go Back
-                </button>
-            </form>
+        {mode !== 'forgot' && (
+          <div>
+            <label className="block text-xs font-medium text-slate-600 mb-1.5">Password</label>
+            <div className="relative">
+              <Lock className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
+              <input
+                type="password" value={password} onChange={(e) => setPassword(e.target.value)}
+                className={authInputClass}
+                placeholder="••••••••" minLength={8} required
+              />
+            </div>
+            {mode === 'login' && (
+              <button type="button" onClick={() => { setMode('forgot'); resetFeedback(); }}
+                className="mt-2 text-xs text-slate-500 hover:text-brand-600">
+                Forgot password?
+              </button>
+            )}
+          </div>
         )}
-      </div>
-    </div>
+
+        {error && <p className="text-xs text-red-600">{error}</p>}
+        {message && <p className="text-xs text-emerald-600">{message}</p>}
+
+        <button type="submit" disabled={loading} className={authPrimaryButtonClass}>
+          {loading ? <Loader2 className="animate-spin w-4 h-4" /> :
+            mode === 'login' ? 'Sign in' : mode === 'register' ? 'Create account' : 'Send reset link'}
+        </button>
+
+        {mode === 'forgot' ? (
+          <button type="button" onClick={() => { setMode('login'); resetFeedback(); }} className="w-full text-xs text-slate-500 hover:text-brand-600">
+            Back to sign in
+          </button>
+        ) : (
+          <button type="button" onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); resetFeedback(); }}
+            className="w-full text-xs text-slate-500 hover:text-brand-600">
+            {mode === 'login' ? "Don't have an account? Create one" : 'Already have an account? Sign in'}
+          </button>
+        )}
+      </form>
+    </AuthShell>
   );
 };

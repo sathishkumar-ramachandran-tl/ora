@@ -1,59 +1,49 @@
 """
-Sindhai MCP (Model Context Protocol) Server
+Ora MCP (Model Context Protocol) Server
 
-Exposes Sindhai workspace tools to any MCP client
+Exposes Ora workspace tools to any MCP client
 (Claude Desktop, Claude Code, third-party AI agents).
 
 Run standalone:
-    python -m app.mcp_server --workspace-id <id> --token <jwt>
+    python -m app.mcp_server --workspace-id <id> --user-id <id>
 
-Or mount via streamable-HTTP for remote access.
+Calls the same shared tool implementations (app/tools/task_tools.py) as the in-process
+LangChain orchestrator (app/agents/tools.py) — this process holds its own Flask app
+context and talks to the database directly, rather than proxying over HTTP to a running
+Flask server. That's what keeps this catalog and the orchestrator's catalog from
+drifting: one implementation, two thin protocol-specific wrapper layers.
 """
 import asyncio
 import json
 import os
-import sys
 import argparse
-import httpx
+from datetime import datetime
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import (
     Tool, TextContent, CallToolResult, ListToolsResult
 )
 
+from app import create_app
+from app.tools import task_tools, module_tools, calendar_tools
+
 # MCP Server instance
-app = Server("sindhai-cortex")
+app = Server("ora-cortex")
 
 # Runtime config — set before starting
 _config = {
-    "api_base": os.environ.get("SINDHAI_API_BASE", "http://localhost:5000"),
-    "workspace_id": os.environ.get("SINDHAI_WORKSPACE_ID", ""),
-    "auth_token": os.environ.get("SINDHAI_TOKEN", ""),
+    "workspace_id": os.environ.get("ORA_WORKSPACE_ID", ""),
+    "user_id": os.environ.get("ORA_USER_ID", ""),
 }
 
-
-def _headers():
-    return {
-        "Authorization": f"Bearer {_config['auth_token']}",
-        "Content-Type": "application/json"
-    }
+_flask_app = None
 
 
-async def _api(method: str, path: str, body: dict = None) -> dict:
-    async with httpx.AsyncClient() as client:
-        url = f"{_config['api_base']}{path}"
-        if method == "GET":
-            r = await client.get(url, headers=_headers())
-        elif method == "POST":
-            r = await client.post(url, headers=_headers(), json=body or {})
-        elif method == "PUT":
-            r = await client.put(url, headers=_headers(), json=body or {})
-        elif method == "DELETE":
-            r = await client.delete(url, headers=_headers())
-        else:
-            raise ValueError(f"Unknown method: {method}")
-        r.raise_for_status()
-        return r.json()
+def _result(payload: dict) -> dict:
+    """Unwrap the shared {success, data, error} shape for MCP text output."""
+    if payload["success"]:
+        return payload["data"]
+    return {"error": payload["error"]}
 
 
 # ---------------------------------------------------------------------------
@@ -62,8 +52,8 @@ async def _api(method: str, path: str, body: dict = None) -> dict:
 
 TOOLS = [
     Tool(
-        name="sindhai_list_tasks",
-        description="List tasks in the Sindhai workspace, optionally filtered by project, status, or priority.",
+        name="ora_list_tasks",
+        description="List tasks in the Ora workspace, optionally filtered by project, status, or priority.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -74,8 +64,8 @@ TOOLS = [
         }
     ),
     Tool(
-        name="sindhai_create_task",
-        description="Create a new task in a Sindhai project.",
+        name="ora_create_task",
+        description="Create a new task in a Ora project.",
         inputSchema={
             "type": "object",
             "required": ["project_id", "title"],
@@ -89,8 +79,8 @@ TOOLS = [
         }
     ),
     Tool(
-        name="sindhai_update_task",
-        description="Update fields of an existing Sindhai task.",
+        name="ora_update_task",
+        description="Update fields of an existing Ora task.",
         inputSchema={
             "type": "object",
             "required": ["task_id"],
@@ -100,12 +90,13 @@ TOOLS = [
                 "status": {"type": "string", "enum": ["todo", "in-progress", "review", "done", "backlog"]},
                 "priority": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
                 "description": {"type": "string"},
-                "estimated_hours": {"type": "number"}
+                "estimated_hours": {"type": "number"},
+                "assignee_id": {"type": "string", "description": "User id to assign this task to — resolve a name via ora_list_workspace_members first"}
             }
         }
     ),
     Tool(
-        name="sindhai_delete_task",
+        name="ora_delete_task",
         description="Permanently delete a task from the workspace.",
         inputSchema={
             "type": "object",
@@ -116,7 +107,7 @@ TOOLS = [
         }
     ),
     Tool(
-        name="sindhai_create_project",
+        name="ora_create_project",
         description="Create a new project under an initiative in the workspace.",
         inputSchema={
             "type": "object",
@@ -130,24 +121,315 @@ TOOLS = [
         }
     ),
     Tool(
-        name="sindhai_get_workspace_summary",
+        name="ora_get_workspace_summary",
         description="Get a full summary of the workspace: initiatives, projects, task counts and progress.",
         inputSchema={"type": "object", "properties": {}}
     ),
     Tool(
-        name="sindhai_analyze_progress",
+        name="ora_analyze_progress",
         description="Analyze workspace progress: completion rate, stalled projects, high-priority items.",
         inputSchema={"type": "object", "properties": {}}
     ),
     Tool(
-        name="sindhai_chat",
-        description="Send a message to the Sindhai AI agent and get a response (uses the full agentic chat).",
+        name="ora_list_workspace_members",
+        description="List the people (id, name, email) who are members of this workspace — use to resolve a name to a user id before assigning a task.",
+        inputSchema={"type": "object", "properties": {}}
+    ),
+    Tool(
+        name="ora_list_modules",
+        description="Browse published modules in the Ora marketplace (e.g. exam-prep, course, or project templates), optionally filtered by category.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "category": {"type": "string", "description": "exam_prep|course|project|habit|general (optional)"}
+            }
+        }
+    ),
+    Tool(
+        name="ora_generate_module",
+        description="Generate a new module (a phase-by-phase milestone+task plan) for a goal, e.g. 'UPSC prep in 8 months'. Runs asynchronously — returns immediately with an id to poll via ora_get_module_progress.",
+        inputSchema={
+            "type": "object",
+            "required": ["goal"],
+            "properties": {
+                "goal": {"type": "string"},
+                "title": {"type": "string"},
+                "category": {"type": "string", "enum": ["exam_prep", "course", "project", "habit", "general"], "default": "general"},
+                "difficulty": {"type": "string", "enum": ["beginner", "intermediate", "advanced"], "default": "intermediate"}
+            }
+        }
+    ),
+    Tool(
+        name="ora_get_module_progress",
+        description="Check generation progress/status for a module template (pending|generating|ready|failed).",
+        inputSchema={
+            "type": "object",
+            "required": ["module_template_id"],
+            "properties": {"module_template_id": {"type": "string"}}
+        }
+    ),
+    Tool(
+        name="ora_install_module",
+        description="Install a ready module into the workspace — fans its milestone/task structure out into a real project.",
+        inputSchema={
+            "type": "object",
+            "required": ["module_template_id"],
+            "properties": {"module_template_id": {"type": "string"}}
+        }
+    ),
+    Tool(
+        name="ora_list_events",
+        description="List calendar events in a window, expanding recurring events into concrete occurrences. Respects personal/workspace/company visibility scoping.",
+        inputSchema={
+            "type": "object",
+            "required": ["start", "end"],
+            "properties": {
+                "start": {"type": "string", "description": "ISO 8601 window start"},
+                "end": {"type": "string", "description": "ISO 8601 window end"},
+                "scope": {"type": "string", "enum": ["personal", "workspace", "company"], "description": "Filter to one scope (optional)"}
+            }
+        }
+    ),
+    Tool(
+        name="ora_create_event",
+        description="Create a calendar event, optionally recurring (RFC5545 RRULE) or scoped to workspace/company visibility.",
+        inputSchema={
+            "type": "object",
+            "required": ["title", "start", "end"],
+            "properties": {
+                "title": {"type": "string"},
+                "start": {"type": "string", "description": "ISO 8601 start"},
+                "end": {"type": "string", "description": "ISO 8601 end"},
+                "type": {"type": "string", "enum": ["task_block", "meeting", "personal", "reminder"], "default": "personal"},
+                "scope": {"type": "string", "enum": ["personal", "workspace", "company"], "default": "personal"},
+                "task_id": {"type": "string"},
+                "color": {"type": "string", "default": "blue"},
+                "timezone": {"type": "string", "default": "UTC"},
+                "recurrence_rule": {"type": "string", "description": "RFC5545 RRULE text, e.g. 'FREQ=WEEKLY;BYDAY=MO,WE,FR' (optional)"},
+                "attendees": {"type": "array", "items": {"type": "string"}, "description": "User IDs, beyond the owner, who can see this event (optional)"}
+            }
+        }
+    ),
+    Tool(
+        name="ora_update_event",
+        description="Update fields of an existing calendar event.",
+        inputSchema={
+            "type": "object",
+            "required": ["event_id"],
+            "properties": {
+                "event_id": {"type": "string"},
+                "title": {"type": "string"},
+                "start": {"type": "string"},
+                "end": {"type": "string"},
+                "color": {"type": "string"},
+                "scope": {"type": "string", "enum": ["personal", "workspace", "company"]}
+            }
+        }
+    ),
+    Tool(
+        name="ora_delete_event",
+        description="Delete a calendar event, optionally its entire recurring series.",
+        inputSchema={
+            "type": "object",
+            "required": ["event_id"],
+            "properties": {
+                "event_id": {"type": "string"},
+                "delete_series": {"type": "boolean", "default": False}
+            }
+        }
+    ),
+    Tool(
+        name="ora_find_availability",
+        description="Scan attendees' events for open slots within working hours. The scheduling intelligence tool, not just CRUD.",
+        inputSchema={
+            "type": "object",
+            "required": ["duration_minutes", "window_start", "window_end"],
+            "properties": {
+                "attendee_user_ids": {"type": "array", "items": {"type": "string"}, "description": "Defaults to the current user"},
+                "duration_minutes": {"type": "integer"},
+                "window_start": {"type": "string"},
+                "window_end": {"type": "string"},
+                "day_start_hour": {"type": "integer", "default": 9},
+                "day_end_hour": {"type": "integer", "default": 18}
+            }
+        }
+    ),
+    Tool(
+        name="ora_auto_schedule_tasks",
+        description="Auto-schedule tasks into real free calendar slots (calendar-aware — never invents a schedule). Without task_ids, schedules every open, not-yet-scheduled task in the workspace, highest priority first.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "task_ids": {"type": "array", "items": {"type": "string"}, "description": "Specific tasks to schedule; omit to auto-select all open unscheduled tasks"},
+                "day_start_hour": {"type": "integer", "default": 9},
+                "day_end_hour": {"type": "integer", "default": 18},
+                "weekdays_only": {"type": "boolean", "default": True},
+                "target_end_date": {"type": "string", "description": "ISO date cap on how far out to look; defaults to 14 days out"},
+                "block_hours": {"type": "number", "description": "Override each task's estimated_hours for the block duration"}
+            }
+        }
+    ),
+    Tool(
+        name="ora_schedule_module_milestones",
+        description="Read an installed module's milestones and auto-create task_block focus events for them, placed via ora_find_availability so they land in genuinely free time.",
+        inputSchema={
+            "type": "object",
+            "required": ["module_instance_id"],
+            "properties": {
+                "module_instance_id": {"type": "string"},
+                "block_hours": {"type": "number", "default": 2.0}
+            }
+        }
+    ),
+    Tool(
+        name="ora_create_milestone",
+        description="Create a milestone under a project.",
+        inputSchema={
+            "type": "object",
+            "required": ["project_id", "title"],
+            "properties": {
+                "project_id": {"type": "string"},
+                "title": {"type": "string"},
+                "description": {"type": "string"},
+                "due_date": {"type": "string", "description": "ISO 8601 date/datetime (optional)"},
+                "order": {"type": "integer", "default": 0}
+            }
+        }
+    ),
+    Tool(
+        name="ora_list_milestones",
+        description="List milestones for a project, ordered by sequence.",
+        inputSchema={
+            "type": "object",
+            "required": ["project_id"],
+            "properties": {"project_id": {"type": "string"}}
+        }
+    ),
+    Tool(
+        name="ora_update_milestone",
+        description="Update fields of an existing milestone.",
+        inputSchema={
+            "type": "object",
+            "required": ["milestone_id"],
+            "properties": {
+                "milestone_id": {"type": "string"},
+                "title": {"type": "string"},
+                "description": {"type": "string"},
+                "due_date": {"type": "string"},
+                "status": {"type": "string", "enum": ["pending", "in_progress", "done"]},
+                "order": {"type": "integer"}
+            }
+        }
+    ),
+    Tool(
+        name="ora_delete_milestone",
+        description="Delete a milestone. Linked tasks are unlinked, not deleted.",
+        inputSchema={
+            "type": "object",
+            "required": ["milestone_id"],
+            "properties": {"milestone_id": {"type": "string"}}
+        }
+    ),
+    Tool(
+        name="ora_create_sprint",
+        description="Create a sprint under a project.",
+        inputSchema={
+            "type": "object",
+            "required": ["project_id", "name"],
+            "properties": {
+                "project_id": {"type": "string"},
+                "name": {"type": "string"},
+                "start_date": {"type": "string"},
+                "end_date": {"type": "string"},
+                "status": {"type": "string", "enum": ["planned", "active", "completed"], "default": "planned"}
+            }
+        }
+    ),
+    Tool(
+        name="ora_list_sprints",
+        description="List sprints for a project.",
+        inputSchema={
+            "type": "object",
+            "required": ["project_id"],
+            "properties": {"project_id": {"type": "string"}}
+        }
+    ),
+    Tool(
+        name="ora_update_sprint",
+        description="Update fields of an existing sprint.",
+        inputSchema={
+            "type": "object",
+            "required": ["sprint_id"],
+            "properties": {
+                "sprint_id": {"type": "string"},
+                "name": {"type": "string"},
+                "start_date": {"type": "string"},
+                "end_date": {"type": "string"},
+                "status": {"type": "string", "enum": ["planned", "active", "completed"]}
+            }
+        }
+    ),
+    Tool(
+        name="ora_delete_sprint",
+        description="Delete a sprint. Linked tasks are unlinked, not deleted.",
+        inputSchema={
+            "type": "object",
+            "required": ["sprint_id"],
+            "properties": {"sprint_id": {"type": "string"}}
+        }
+    ),
+    Tool(
+        name="ora_add_dependency",
+        description="Declare that a task depends on another task (blocked until it's done). Rejected if it would create a cycle.",
+        inputSchema={
+            "type": "object",
+            "required": ["task_id", "depends_on_task_id"],
+            "properties": {
+                "task_id": {"type": "string"},
+                "depends_on_task_id": {"type": "string"},
+                "dependency_type": {"type": "string", "enum": ["blocks", "blocked_by", "relates_to"], "default": "blocks"}
+            }
+        }
+    ),
+    Tool(
+        name="ora_remove_dependency",
+        description="Remove a task dependency link.",
+        inputSchema={
+            "type": "object",
+            "required": ["dependency_id"],
+            "properties": {"dependency_id": {"type": "string"}}
+        }
+    ),
+    Tool(
+        name="ora_get_blocked_tasks",
+        description="List tasks in a project that are currently blocked by an incomplete dependency — the dependency-graph read tool for planning around blockers.",
+        inputSchema={
+            "type": "object",
+            "required": ["project_id"],
+            "properties": {"project_id": {"type": "string"}}
+        }
+    ),
+    Tool(
+        name="ora_replan_project",
+        description="AI-replan an existing project: invokes the Core Intelligence Layer's planner/executor/reflect loop scoped to this project to add/update milestones, sprints, tasks, and dependencies toward a stated goal.",
+        inputSchema={
+            "type": "object",
+            "required": ["project_id", "goal"],
+            "properties": {
+                "project_id": {"type": "string"},
+                "goal": {"type": "string", "description": "What should change, e.g. 'add a QA milestone before launch'"}
+            }
+        }
+    ),
+    Tool(
+        name="ora_chat",
+        description="Send a message to the Ora AI agent and get a response (uses the full agentic multi-agent orchestrator).",
         inputSchema={
             "type": "object",
             "required": ["message"],
             "properties": {
                 "message": {"type": "string"},
-                "session_id": {"type": "string", "description": "Reuse an existing chat session (optional)"}
+                "session_id": {"type": "string", "description": "Reuse an existing thread for multi-turn context (optional)"}
             }
         }
     )
@@ -164,90 +446,218 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
     ws_id = _config["workspace_id"]
 
     try:
-        if name == "sindhai_list_tasks":
-            result = await _api("GET", f"/api/v1/workspaces/{ws_id}/full-state")
-            # Flatten tasks
-            all_tasks = []
-            for c in result:
-                for p in c.get("projects", []):
-                    if arguments.get("project_id") and p["id"] != arguments["project_id"]:
-                        continue
-                    for t in p.get("tasks", []):
-                        if arguments.get("status") and t["status"] != arguments["status"]:
-                            continue
-                        if arguments.get("priority") and t["priority"] != arguments["priority"]:
-                            continue
-                        all_tasks.append({**t, "project": p["name"], "initiative": c["name"]})
-            text = json.dumps(all_tasks, indent=2)
+        with _flask_app.app_context():
+            if name == "ora_list_tasks":
+                result = _result(task_tools.get_tasks(
+                    ws_id,
+                    arguments.get("project_id"),
+                    arguments.get("status"),
+                    arguments.get("priority"),
+                ))
 
-        elif name == "sindhai_create_task":
-            result = await _api("POST", f"/api/v1/projects/{arguments['project_id']}/tasks", {
-                "tasks": [{
-                    "id": str(__import__("uuid").uuid4()),
-                    "workspaceId": ws_id,
-                    "title": arguments["title"],
-                    "description": arguments.get("description", ""),
-                    "priority": arguments.get("priority", "medium"),
-                    "estimatedHours": arguments.get("estimated_hours", 1),
-                    "status": "todo"
-                }]
-            })
-            text = json.dumps(result)
+            elif name == "ora_create_task":
+                result = _result(task_tools.create_task(
+                    arguments["project_id"], ws_id, arguments["title"],
+                    arguments.get("description", ""),
+                    arguments.get("priority", "medium"),
+                    arguments.get("estimated_hours", 1.0),
+                ))
 
-        elif name == "sindhai_update_task":
-            # Use the chat agent for updates (it handles them via tools)
-            text = json.dumps({"message": "Use sindhai_chat to update tasks by natural language for best results."})
+            elif name == "ora_update_task":
+                result = _result(task_tools.update_task(
+                    arguments["task_id"],
+                    title=arguments.get("title"),
+                    description=arguments.get("description"),
+                    status=arguments.get("status"),
+                    priority=arguments.get("priority"),
+                    estimated_hours=arguments.get("estimated_hours"),
+                    assignee_id=arguments.get("assignee_id"),
+                ))
 
-        elif name == "sindhai_delete_task":
-            text = json.dumps({"message": "Use sindhai_chat: 'delete task <id>' for safe deletion."})
+            elif name == "ora_delete_task":
+                result = _result(task_tools.delete_task(arguments["task_id"]))
 
-        elif name == "sindhai_create_project":
-            result = await _api("POST", f"/api/v1/companies/{arguments['initiative_id']}/projects", {
-                "id": str(__import__("uuid").uuid4()),
-                "workspaceId": ws_id,
-                "name": arguments["name"],
-                "type": arguments.get("project_type", "build"),
-                "mission": arguments.get("mission", "")
-            })
-            text = json.dumps(result)
+            elif name == "ora_create_project":
+                result = _result(task_tools.create_project(
+                    arguments["initiative_id"], ws_id, arguments["name"],
+                    arguments.get("project_type", "build"),
+                    arguments.get("mission", ""),
+                ))
 
-        elif name == "sindhai_get_workspace_summary":
-            result = await _api("GET", f"/api/v1/workspaces/{ws_id}/full-state")
-            text = json.dumps(result, indent=2)
+            elif name == "ora_get_workspace_summary":
+                result = _result(task_tools.get_workspace_summary(ws_id))
 
-        elif name == "sindhai_analyze_progress":
-            # Simple inline analysis
-            result = await _api("GET", f"/api/v1/workspaces/{ws_id}/full-state")
-            total = done = 0
-            for c in result:
-                for p in c.get("projects", []):
-                    for t in p.get("tasks", []):
-                        total += 1
-                        if t["status"] == "done":
-                            done += 1
-            rate = round((done / total * 100), 1) if total else 0
-            text = json.dumps({
-                "total_tasks": total,
-                "completed": done,
-                "completion_rate_pct": rate,
-                "initiatives": len(result)
-            })
+            elif name == "ora_analyze_progress":
+                result = _result(task_tools.analyze_workspace_progress(ws_id))
 
-        elif name == "sindhai_chat":
-            # Create a session and send a message (non-streaming for MCP)
-            session = await _api("POST", "/api/v1/chat/sessions", {
-                "workspace_id": ws_id
-            })
-            session_id = arguments.get("session_id") or session["id"]
-            # For MCP we can't stream; collect full response via non-streaming call
-            text = json.dumps({
-                "session_id": session_id,
-                "message": "Use the Sindhai web app for full streaming chat. Session created: " + session_id
-            })
+            elif name == "ora_list_workspace_members":
+                result = _result(task_tools.list_workspace_members(ws_id))
 
-        else:
-            text = json.dumps({"error": f"Unknown tool: {name}"})
+            elif name == "ora_list_modules":
+                result = _result(module_tools.list_modules(category=arguments.get("category")))
 
+            elif name == "ora_generate_module":
+                goal = arguments["goal"]
+                draft = module_tools.create_module_draft(
+                    title=arguments.get("title") or goal[:80],
+                    description=goal,
+                    category=arguments.get("category", "general"),
+                    difficulty=arguments.get("difficulty", "intermediate"),
+                    author_id=_config["user_id"],
+                )
+                if draft["success"]:
+                    module_tools.start_generation(
+                        _flask_app,
+                        module_template_id=draft["data"]["moduleTemplateId"],
+                        module_template_version_id=draft["data"]["moduleTemplateVersionId"],
+                        goal=goal,
+                        category=arguments.get("category", "general"),
+                        difficulty=arguments.get("difficulty", "intermediate"),
+                    )
+                result = _result(draft)
+
+            elif name == "ora_get_module_progress":
+                result = _result(module_tools.get_generation_progress_by_template(arguments["module_template_id"]))
+
+            elif name == "ora_install_module":
+                result = _result(module_tools.install_module(
+                    arguments["module_template_id"], ws_id, _config["user_id"],
+                ))
+
+            elif name == "ora_list_events":
+                result = _result(calendar_tools.list_events(
+                    ws_id, _config["user_id"],
+                    datetime.fromisoformat(arguments["start"]),
+                    datetime.fromisoformat(arguments["end"]),
+                    scope=arguments.get("scope"),
+                ))
+
+            elif name == "ora_create_event":
+                result = _result(calendar_tools.create_event(
+                    ws_id, _config["user_id"], arguments["title"],
+                    datetime.fromisoformat(arguments["start"]),
+                    datetime.fromisoformat(arguments["end"]),
+                    event_type=arguments.get("type", "personal"),
+                    scope=arguments.get("scope", "personal"),
+                    task_id=arguments.get("task_id"),
+                    color=arguments.get("color", "blue"),
+                    timezone=arguments.get("timezone", "UTC"),
+                    recurrence_rule=arguments.get("recurrence_rule"),
+                    attendees=arguments.get("attendees"),
+                ))
+
+            elif name == "ora_update_event":
+                result = _result(calendar_tools.update_event(
+                    arguments["event_id"],
+                    title=arguments.get("title"),
+                    start=datetime.fromisoformat(arguments["start"]) if arguments.get("start") else None,
+                    end=datetime.fromisoformat(arguments["end"]) if arguments.get("end") else None,
+                    color=arguments.get("color"),
+                    scope=arguments.get("scope"),
+                ))
+
+            elif name == "ora_delete_event":
+                result = _result(calendar_tools.delete_event(
+                    arguments["event_id"], delete_series=arguments.get("delete_series", False),
+                ))
+
+            elif name == "ora_find_availability":
+                result = _result(calendar_tools.find_availability(
+                    ws_id,
+                    arguments.get("attendee_user_ids") or [_config["user_id"]],
+                    arguments["duration_minutes"],
+                    datetime.fromisoformat(arguments["window_start"]),
+                    datetime.fromisoformat(arguments["window_end"]),
+                    day_start_hour=arguments.get("day_start_hour", 9),
+                    day_end_hour=arguments.get("day_end_hour", 18),
+                ))
+
+            elif name == "ora_auto_schedule_tasks":
+                result = _result(calendar_tools.auto_schedule_tasks(
+                    ws_id, _config["user_id"],
+                    task_ids=arguments.get("task_ids"),
+                    day_start_hour=arguments.get("day_start_hour", 9),
+                    day_end_hour=arguments.get("day_end_hour", 18),
+                    weekdays_only=arguments.get("weekdays_only", True),
+                    window_end=arguments.get("target_end_date"),
+                    block_hours=arguments.get("block_hours"),
+                ))
+
+            elif name == "ora_schedule_module_milestones":
+                result = _result(calendar_tools.schedule_module_milestones(
+                    arguments["module_instance_id"], ws_id, _config["user_id"],
+                    block_hours=arguments.get("block_hours", 2.0),
+                ))
+
+            elif name == "ora_create_milestone":
+                result = _result(task_tools.create_milestone(
+                    arguments["project_id"], arguments["title"],
+                    arguments.get("description", ""), arguments.get("due_date"),
+                    arguments.get("order", 0),
+                ))
+
+            elif name == "ora_list_milestones":
+                result = _result(task_tools.list_milestones(arguments["project_id"]))
+
+            elif name == "ora_update_milestone":
+                result = _result(task_tools.update_milestone(
+                    arguments["milestone_id"],
+                    title=arguments.get("title"),
+                    description=arguments.get("description"),
+                    due_date=arguments.get("due_date"),
+                    status=arguments.get("status"),
+                    order=arguments.get("order"),
+                ))
+
+            elif name == "ora_delete_milestone":
+                result = _result(task_tools.delete_milestone(arguments["milestone_id"]))
+
+            elif name == "ora_create_sprint":
+                result = _result(task_tools.create_sprint(
+                    arguments["project_id"], arguments["name"],
+                    arguments.get("start_date"), arguments.get("end_date"),
+                    arguments.get("status", "planned"),
+                ))
+
+            elif name == "ora_list_sprints":
+                result = _result(task_tools.list_sprints(arguments["project_id"]))
+
+            elif name == "ora_update_sprint":
+                result = _result(task_tools.update_sprint(
+                    arguments["sprint_id"],
+                    name=arguments.get("name"),
+                    start_date=arguments.get("start_date"),
+                    end_date=arguments.get("end_date"),
+                    status=arguments.get("status"),
+                ))
+
+            elif name == "ora_delete_sprint":
+                result = _result(task_tools.delete_sprint(arguments["sprint_id"]))
+
+            elif name == "ora_add_dependency":
+                result = _result(task_tools.add_task_dependency(
+                    arguments["task_id"], arguments["depends_on_task_id"],
+                    arguments.get("dependency_type", "blocks"),
+                ))
+
+            elif name == "ora_remove_dependency":
+                result = _result(task_tools.remove_task_dependency(arguments["dependency_id"]))
+
+            elif name == "ora_get_blocked_tasks":
+                result = _result(task_tools.get_blocked_tasks(arguments["project_id"]))
+
+            elif name == "ora_replan_project":
+                result = _result(task_tools.replan_project(
+                    arguments["project_id"], ws_id, _config["user_id"], arguments["goal"],
+                ))
+
+            elif name == "ora_chat":
+                result = _run_chat(arguments["message"], arguments.get("session_id"))
+
+            else:
+                result = {"error": f"Unknown tool: {name}"}
+
+        text = json.dumps(result, indent=2, default=str)
         return CallToolResult(content=[TextContent(type="text", text=text)])
 
     except Exception as e:
@@ -257,19 +667,50 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
         )
 
 
+def _run_chat(message: str, session_id: str | None) -> dict:
+    """Invoke the LangGraph orchestrator synchronously (MCP's stdio transport has no
+    SSE-equivalent streaming, so this blocks for the full response — same non-streaming
+    trade-off as the /a2a/tasks/send endpoint)."""
+    import uuid as _uuid
+    from langchain_core.messages import HumanMessage
+    from app.agents.orchestrator import create_orchestrator
+
+    thread_id = session_id or f"mcp_{_uuid.uuid4()}"
+    orchestrator = create_orchestrator()
+    state = {
+        "messages": [HumanMessage(content=message)],
+        "workspace_id": _config["workspace_id"],
+        "user_id": _config["user_id"],
+        "workspace_context": {},
+        "intent": None,
+        "planning_phase": None,
+        "draft_plan": {},
+        "planning_project_id": None,
+    }
+    config = {"configurable": {"thread_id": thread_id}}
+    result = orchestrator.invoke(state, config=config)
+    last_msg = result["messages"][-1]
+    response_text = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
+    return {"session_id": thread_id, "response": response_text}
+
+
 async def main():
-    parser = argparse.ArgumentParser(description="Sindhai MCP Server")
+    global _flask_app
+
+    parser = argparse.ArgumentParser(description="Ora MCP Server")
     parser.add_argument("--workspace-id", help="Workspace ID to operate on")
-    parser.add_argument("--token", help="JWT token for authentication")
-    parser.add_argument("--api-base", default="http://localhost:5000")
+    parser.add_argument("--user-id", help="User ID to attribute actions to (for ora_chat)")
     args = parser.parse_args()
 
     if args.workspace_id:
         _config["workspace_id"] = args.workspace_id
-    if args.token:
-        _config["auth_token"] = args.token
-    if args.api_base:
-        _config["api_base"] = args.api_base
+    if args.user_id:
+        _config["user_id"] = args.user_id
+
+    if not _config["workspace_id"]:
+        raise SystemExit("--workspace-id (or ORA_WORKSPACE_ID) is required")
+
+    _flask_app = create_app()
 
     async with stdio_server() as (read_stream, write_stream):
         await app.run(read_stream, write_stream, app.create_initialization_options())

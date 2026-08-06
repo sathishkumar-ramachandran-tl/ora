@@ -1,12 +1,14 @@
 import React, { useState } from 'react';
 import {
   ArrowRight, ArrowLeft, Loader2, Building2, User,
-  Phone, MapPin, GraduationCap, Briefcase, Target, Rocket, Home, Bot
+  Phone, MapPin, GraduationCap, Briefcase, Target, Rocket, Home
 } from 'lucide-react';
-import { apiClient } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
-import { authApi } from '../../api/auth';
+import { updateProfile } from '../../api/auth';
+import { createWorkspace } from '../../api/workspace';
+import { createOrganization } from '../../api/org';
 import { Purpose } from '../../types';
+import { OraMark, authInputClass } from './AuthShell';
 
 type Step = 'profile' | 'wstype' | 'wsname';
 
@@ -47,7 +49,7 @@ export const Onboarding: React.FC = () => {
     setError('');
     try {
       // Save profile
-      await authApi.updateProfile({
+      await updateProfile({
         name: name.trim(),
         phone: phone.trim() || undefined,
         age: age ? Number(age) : undefined,
@@ -56,17 +58,12 @@ export const Onboarding: React.FC = () => {
         is_onboarded: true,
       } as any);
 
-      // Create workspace
-      await apiClient.post('/workspaces', {
-        workspace: {
-          id: crypto.randomUUID(),
-          name: wsName.trim(),
-          context: wsType,
-          type: wsType === 'personal' ? 'study' : 'project',
-          persona: 'general',
-        },
-        userId: user.id
-      });
+      // Company workspaces need a real Organization behind them (owns billing, RBAC,
+      // and cross-workspace membership) — create it first, then the workspace tied to it.
+      const organizationId = wsType === 'company'
+        ? (await createOrganization(wsName.trim())).id
+        : undefined;
+      await createWorkspace(user.id, wsName.trim(), wsType, 'general', organizationId);
 
       window.location.reload();
     } catch {
@@ -79,69 +76,61 @@ export const Onboarding: React.FC = () => {
   const stepIndex = step === 'profile' ? 0 : step === 'wstype' ? 1 : 2;
 
   return (
-    <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4">
-      {/* Background glow */}
-      <div className="fixed inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute top-1/3 left-1/4 w-80 h-80 bg-indigo-600/10 rounded-full blur-3xl" />
-        <div className="absolute bottom-1/4 right-1/3 w-60 h-60 bg-purple-600/10 rounded-full blur-3xl" />
-      </div>
-
-      <div className="w-full max-w-lg relative z-10">
+    <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4">
+      <div className="w-full max-w-lg">
         {/* Logo */}
-        <div className="flex items-center justify-center gap-3 mb-8">
-          <div className="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center shadow-lg shadow-indigo-600/30">
-            <Bot size={20} className="text-white" />
-          </div>
-          <span className="text-white font-bold text-xl tracking-tight">Sindhai Cortex</span>
+        <div className="flex flex-col items-center mb-6">
+          <OraMark />
+          <span className="mt-3 text-lg font-semibold text-slate-900 tracking-tight">Ora</span>
         </div>
 
         {/* Progress dots */}
         <div className="flex justify-center gap-2 mb-6">
           {[0, 1, 2].map(i => (
             <div key={i} className={`h-1 rounded-full transition-all duration-300
-              ${i === stepIndex ? 'w-8 bg-indigo-500' : i < stepIndex ? 'w-4 bg-indigo-700' : 'w-4 bg-slate-700'}`} />
+              ${i === stepIndex ? 'w-8 bg-brand-600' : i < stepIndex ? 'w-4 bg-brand-300' : 'w-4 bg-slate-200'}`} />
           ))}
         </div>
 
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden">
+        <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
           {/* Step: Profile */}
           {step === 'profile' && (
             <form onSubmit={handleProfileNext} className="p-6 space-y-5">
               <div>
-                <h2 className="text-lg font-bold text-white">Tell us about yourself</h2>
-                <p className="text-slate-400 text-sm mt-1">Your AI will personalize everything around you.</p>
+                <h2 className="text-lg font-semibold text-slate-900">Tell us about yourself</h2>
+                <p className="text-slate-500 text-sm mt-1">Your AI will personalize everything around you.</p>
               </div>
 
               {/* Name */}
               <div>
-                <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5 block">Full Name *</label>
+                <label className="text-xs font-medium text-slate-600 mb-1.5 block">Full Name *</label>
                 <input
                   autoFocus
                   value={name}
                   onChange={e => setName(e.target.value)}
                   placeholder="Your name"
                   required
-                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-indigo-500 transition-colors"
+                  className={authInputClass.replace('pl-10', 'pl-4')}
                 />
               </div>
 
               {/* Phone + Age row */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5 block">Phone</label>
+                  <label className="text-xs font-medium text-slate-600 mb-1.5 block">Phone</label>
                   <div className="relative">
-                    <Phone size={13} className="absolute left-3 top-3 text-slate-500" />
+                    <Phone size={13} className="absolute left-3 top-3.5 text-slate-400" />
                     <input
                       value={phone}
                       onChange={e => setPhone(e.target.value)}
                       placeholder="+91 9999..."
                       type="tel"
-                      className="w-full bg-slate-800 border border-slate-700 rounded-xl pl-8 pr-3 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-indigo-500 transition-colors"
+                      className={authInputClass}
                     />
                   </div>
                 </div>
                 <div>
-                  <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5 block">Age</label>
+                  <label className="text-xs font-medium text-slate-600 mb-1.5 block">Age</label>
                   <input
                     value={age}
                     onChange={e => setAge(e.target.value)}
@@ -149,28 +138,28 @@ export const Onboarding: React.FC = () => {
                     type="number"
                     min={10}
                     max={100}
-                    className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-indigo-500 transition-colors"
+                    className={authInputClass.replace('pl-10', 'pl-4')}
                   />
                 </div>
               </div>
 
               {/* Country */}
               <div>
-                <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5 block">Country</label>
+                <label className="text-xs font-medium text-slate-600 mb-1.5 block">Country</label>
                 <div className="relative">
-                  <MapPin size={13} className="absolute left-3 top-3 text-slate-500" />
+                  <MapPin size={13} className="absolute left-3 top-3.5 text-slate-400" />
                   <input
                     value={country}
                     onChange={e => setCountry(e.target.value)}
                     placeholder="India, USA, UK…"
-                    className="w-full bg-slate-800 border border-slate-700 rounded-xl pl-8 pr-3 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-indigo-500 transition-colors"
+                    className={authInputClass}
                   />
                 </div>
               </div>
 
               {/* Purpose */}
               <div>
-                <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 block">Primary Purpose *</label>
+                <label className="text-xs font-medium text-slate-600 mb-2 block">Primary Purpose *</label>
                 <div className="grid grid-cols-2 gap-2">
                   {PURPOSES.map(({ value, label, description, icon: Icon }) => (
                     <button
@@ -179,12 +168,12 @@ export const Onboarding: React.FC = () => {
                       onClick={() => setPurpose(value)}
                       className={`flex items-start gap-3 p-3 rounded-xl border text-left transition-all
                         ${purpose === value
-                          ? 'border-indigo-500 bg-indigo-500/10 text-white'
-                          : 'border-slate-700 text-slate-400 hover:border-slate-600 hover:text-slate-300'}`}>
-                      <Icon size={16} className={`flex-shrink-0 mt-0.5 ${purpose === value ? 'text-indigo-400' : ''}`} />
+                          ? 'border-brand-500 bg-brand-50 text-slate-900'
+                          : 'border-slate-200 text-slate-500 hover:border-slate-300 hover:text-slate-700'}`}>
+                      <Icon size={16} className={`flex-shrink-0 mt-0.5 ${purpose === value ? 'text-brand-600' : ''}`} />
                       <div>
                         <p className="text-xs font-semibold">{label}</p>
-                        <p className="text-[10px] text-slate-500 leading-tight">{description}</p>
+                        <p className="text-[10px] text-slate-400 leading-tight">{description}</p>
                       </div>
                     </button>
                   ))}
@@ -194,7 +183,7 @@ export const Onboarding: React.FC = () => {
               <button
                 type="submit"
                 disabled={!name.trim() || !purpose}
-                className="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white py-2.5 rounded-xl text-sm font-semibold transition-all">
+                className="w-full flex items-center justify-center gap-2 bg-brand-600 hover:bg-brand-700 disabled:opacity-40 disabled:cursor-not-allowed text-white py-2.5 rounded-xl text-sm font-medium transition-colors">
                 Continue <ArrowRight size={15} />
               </button>
             </form>
@@ -204,33 +193,33 @@ export const Onboarding: React.FC = () => {
           {step === 'wstype' && (
             <div className="p-6 space-y-5">
               <div>
-                <h2 className="text-lg font-bold text-white">Set up your workspace</h2>
-                <p className="text-slate-400 text-sm mt-1">How will you primarily use Sindhai?</p>
+                <h2 className="text-lg font-semibold text-slate-900">Set up your workspace</h2>
+                <p className="text-slate-500 text-sm mt-1">How will you primarily use Ora?</p>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <button
                   onClick={() => { setWsType('personal'); setStep('wsname'); }}
-                  className="group p-5 border border-slate-700 hover:border-indigo-500 rounded-xl text-left transition-all hover:bg-indigo-500/5">
-                  <div className="w-9 h-9 bg-indigo-500/10 rounded-lg flex items-center justify-center mb-3 group-hover:bg-indigo-600 transition-colors">
-                    <User size={18} className="text-indigo-400 group-hover:text-white" />
+                  className="group p-5 border border-slate-200 hover:border-brand-400 rounded-xl text-left transition-all hover:bg-brand-50/50">
+                  <div className="w-9 h-9 bg-brand-50 rounded-lg flex items-center justify-center mb-3 group-hover:bg-brand-600 transition-colors">
+                    <User size={18} className="text-brand-600 group-hover:text-white" />
                   </div>
-                  <p className="text-sm font-bold text-white mb-1">Personal</p>
+                  <p className="text-sm font-semibold text-slate-900 mb-1">Personal</p>
                   <p className="text-xs text-slate-500 leading-snug">For individual goals, learning & freelance</p>
                 </button>
 
                 <button
                   onClick={() => { setWsType('company'); setStep('wsname'); }}
-                  className="group p-5 border border-slate-700 hover:border-blue-500 rounded-xl text-left transition-all hover:bg-blue-500/5">
-                  <div className="w-9 h-9 bg-blue-500/10 rounded-lg flex items-center justify-center mb-3 group-hover:bg-blue-600 transition-colors">
-                    <Building2 size={18} className="text-blue-400 group-hover:text-white" />
+                  className="group p-5 border border-slate-200 hover:border-blue-400 rounded-xl text-left transition-all hover:bg-blue-50/50">
+                  <div className="w-9 h-9 bg-blue-50 rounded-lg flex items-center justify-center mb-3 group-hover:bg-blue-600 transition-colors">
+                    <Building2 size={18} className="text-blue-600 group-hover:text-white" />
                   </div>
-                  <p className="text-sm font-bold text-white mb-1">Company</p>
+                  <p className="text-sm font-semibold text-slate-900 mb-1">Company</p>
                   <p className="text-xs text-slate-500 leading-snug">Team collaboration, RBAC & projects</p>
                 </button>
               </div>
 
-              <button onClick={() => setStep('profile')} className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-300 transition-colors">
+              <button onClick={() => setStep('profile')} className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700 transition-colors">
                 <ArrowLeft size={13} /> Back
               </button>
             </div>
@@ -240,10 +229,10 @@ export const Onboarding: React.FC = () => {
           {step === 'wsname' && (
             <form onSubmit={handleCreate} className="p-6 space-y-5">
               <div>
-                <h2 className="text-lg font-bold text-white">
+                <h2 className="text-lg font-semibold text-slate-900">
                   {wsType === 'personal' ? 'Name your workspace' : 'Company name'}
                 </h2>
-                <p className="text-slate-400 text-sm mt-1">You can create more workspaces later.</p>
+                <p className="text-slate-500 text-sm mt-1">You can create more workspaces later.</p>
               </div>
 
               <input
@@ -252,31 +241,31 @@ export const Onboarding: React.FC = () => {
                 onChange={e => setWsName(e.target.value)}
                 placeholder={wsType === 'personal' ? 'My Research Hub' : 'Acme Corp'}
                 required
-                className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-indigo-500 transition-colors"
+                className={authInputClass.replace('pl-10', 'pl-4')}
               />
 
-              {error && <p className="text-xs text-red-400">{error}</p>}
+              {error && <p className="text-xs text-red-600">{error}</p>}
 
               <div className="flex gap-3">
                 <button
                   type="button"
                   onClick={() => setStep('wstype')}
-                  className="px-4 py-2.5 text-xs text-slate-400 hover:text-white border border-slate-700 hover:border-slate-600 rounded-xl transition-colors flex items-center gap-1">
+                  className="px-4 py-2.5 text-xs text-slate-500 hover:text-slate-800 border border-slate-200 hover:border-slate-300 rounded-xl transition-colors flex items-center gap-1">
                   <ArrowLeft size={13} /> Back
                 </button>
                 <button
                   type="submit"
                   disabled={loading || !wsName.trim()}
-                  className="flex-1 flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white py-2.5 rounded-xl text-sm font-semibold transition-all">
-                  {loading ? <Loader2 size={16} className="animate-spin" /> : <>Launch Cortex <Target size={15} /></>}
+                  className="flex-1 flex items-center justify-center gap-2 bg-brand-600 hover:bg-brand-700 disabled:opacity-40 disabled:cursor-not-allowed text-white py-2.5 rounded-xl text-sm font-medium transition-colors">
+                  {loading ? <Loader2 size={16} className="animate-spin" /> : <>Launch Ora <Target size={15} /></>}
                 </button>
               </div>
             </form>
           )}
         </div>
 
-        <p className="text-center text-xs text-slate-600 mt-4">
-          Logged in as <span className="text-slate-400">{user?.email}</span>
+        <p className="text-center text-xs text-slate-400 mt-4">
+          Logged in as <span className="text-slate-500">{user?.email}</span>
         </p>
       </div>
     </div>

@@ -1,27 +1,26 @@
 """
-LangChain tool definitions for the Sindhai Agentic System.
+LangChain tool definitions for the Ora Agentic System.
 
-CRUD tools mutate data directly via SQLAlchemy (same DB session).
-Read tools query safely without modification.
+Thin @tool wrappers around the shared business logic in app/tools/task_tools.py —
+the same functions the MCP server (app/mcp_server.py) calls directly. Keeping the
+implementation in one place means the in-process orchestrator and external MCP
+clients can never drift out of sync on what a given tool actually does.
+
 All tools run inside Flask application context.
 """
-import uuid
-import json
+from datetime import datetime
 from typing import Optional
 from langchain_core.tools import tool
-from sqlalchemy import text
+
+from ..tools import task_tools, calendar_tools, module_tools
 
 
-# ---------------------------------------------------------------------------
-# Lazy DB import — avoids circular import at module load time
-# ---------------------------------------------------------------------------
-def _get_db():
-    from ..extensions import db
-    return db
-
-def _get_models():
-    from .. import models
-    return models
+def _unwrap(result: dict):
+    """Convert the shared {success, data, error} shape into what the LLM prompts expect:
+    the data payload on success, or {"error": ...} on failure (matches pre-refactor behavior)."""
+    if result["success"]:
+        return result["data"]
+    return {"error": result["error"]}
 
 
 # ---------------------------------------------------------------------------
@@ -34,53 +33,17 @@ def get_workspace_summary(workspace_id: str) -> dict:
     Get a full summary of the workspace including all initiatives, projects and tasks.
     Use this to answer questions about what's going on in the user's workspace.
     """
-    db = _get_db()
-    m = _get_models()
+    return _unwrap(task_tools.get_workspace_summary(workspace_id))
 
-    workspace = db.session.get(m.Workspace, workspace_id)
-    if not workspace:
-        return {"error": f"Workspace {workspace_id} not found"}
 
-    companies = m.Company.query.filter_by(workspace_id=workspace_id).all()
-    result = {
-        "workspace": {"id": workspace.id, "name": workspace.name, "persona": workspace.persona},
-        "initiatives": []
-    }
-
-    for c in companies:
-        projects = m.Project.query.filter_by(company_id=c.id).all()
-        c_data = {
-            "id": c.id,
-            "name": c.name,
-            "mission": c.mission,
-            "color": c.color,
-            "projects": []
-        }
-        for p in projects:
-            tasks = m.Task.query.filter_by(project_id=p.id).all()
-            task_summary = {
-                "total": len(tasks),
-                "by_status": {},
-                "high_priority": [],
-                "in_progress": []
-            }
-            for t in tasks:
-                task_summary["by_status"][t.status] = task_summary["by_status"].get(t.status, 0) + 1
-                if t.priority in ("high", "critical"):
-                    task_summary["high_priority"].append({"id": t.id, "title": t.title, "status": t.status})
-                if t.status == "in-progress":
-                    task_summary["in_progress"].append({"id": t.id, "title": t.title, "priority": t.priority})
-
-            c_data["projects"].append({
-                "id": p.id,
-                "name": p.name,
-                "type": p.type,
-                "progress": p.progress,
-                "task_summary": task_summary
-            })
-        result["initiatives"].append(c_data)
-
-    return result
+@tool
+def list_workspace_members(workspace_id: str) -> dict:
+    """
+    List the people (id, name, email) who are members of this workspace. Call this first
+    when a user asks to assign a task to someone by name, so you can resolve their name to
+    a user id before calling update_task with assignee_id.
+    """
+    return _unwrap(task_tools.list_workspace_members(workspace_id))
 
 
 @tool
@@ -91,28 +54,7 @@ def get_tasks(workspace_id: str, project_id: Optional[str] = None,
     Status options: todo, in-progress, review, done, backlog.
     Priority options: low, medium, high, critical.
     """
-    db = _get_db()
-    m = _get_models()
-
-    q = m.Task.query.filter_by(workspace_id=workspace_id)
-    if project_id:
-        q = q.filter_by(project_id=project_id)
-    if status:
-        q = q.filter_by(status=status)
-    if priority:
-        q = q.filter_by(priority=priority)
-
-    tasks = q.all()
-    return [{
-        "id": t.id,
-        "title": t.title,
-        "description": t.description,
-        "status": t.status,
-        "priority": t.priority,
-        "estimated_hours": t.estimated_hours,
-        "is_daily_focus": t.is_daily_focus,
-        "project_id": t.project_id
-    } for t in tasks]
+    return _unwrap(task_tools.get_tasks(workspace_id, project_id, status, priority))
 
 
 @tool
@@ -121,80 +63,13 @@ def analyze_workspace_progress(workspace_id: str) -> dict:
     Analyze workspace progress metrics: completion rates, overloaded projects,
     stalled tasks, and suggested priorities. Returns an analysis object.
     """
-    db = _get_db()
-    m = _get_models()
-
-    companies = m.Company.query.filter_by(workspace_id=workspace_id).all()
-    analysis = {
-        "total_tasks": 0,
-        "completed": 0,
-        "in_progress": 0,
-        "overdue_high_priority": [],
-        "stalled_projects": [],
-        "completion_rate": 0,
-        "suggested_focus": []
-    }
-
-    for c in companies:
-        projects = m.Project.query.filter_by(company_id=c.id).all()
-        for p in projects:
-            tasks = m.Task.query.filter_by(project_id=p.id).all()
-            if not tasks:
-                continue
-
-            done_count = sum(1 for t in tasks if t.status == "done")
-            active_count = sum(1 for t in tasks if t.status not in ("done", "backlog"))
-
-            analysis["total_tasks"] += len(tasks)
-            analysis["completed"] += done_count
-            analysis["in_progress"] += sum(1 for t in tasks if t.status == "in-progress")
-
-            if active_count > 0 and done_count == 0:
-                analysis["stalled_projects"].append({
-                    "project": p.name,
-                    "initiative": c.name,
-                    "task_count": active_count
-                })
-
-            for t in tasks:
-                if t.priority in ("high", "critical") and t.status in ("todo", "backlog"):
-                    analysis["overdue_high_priority"].append({
-                        "id": t.id,
-                        "title": t.title,
-                        "project": p.name,
-                        "priority": t.priority
-                    })
-
-    if analysis["total_tasks"] > 0:
-        analysis["completion_rate"] = round(
-            (analysis["completed"] / analysis["total_tasks"]) * 100, 1
-        )
-
-    # Suggest top 3 focus items
-    analysis["suggested_focus"] = analysis["overdue_high_priority"][:3]
-    return analysis
+    return _unwrap(task_tools.analyze_workspace_progress(workspace_id))
 
 
 @tool
 def get_projects(workspace_id: str) -> list:
     """List all projects in the workspace with their initiative context."""
-    db = _get_db()
-    m = _get_models()
-
-    companies = m.Company.query.filter_by(workspace_id=workspace_id).all()
-    projects = []
-    for c in companies:
-        for p in m.Project.query.filter_by(company_id=c.id).all():
-            projects.append({
-                "id": p.id,
-                "name": p.name,
-                "type": p.type,
-                "mission": p.mission,
-                "progress": p.progress,
-                "initiative": c.name,
-                "initiative_id": c.id
-            })
-    return projects
+    return _unwrap(task_tools.get_projects(workspace_id))
 
 
 # ---------------------------------------------------------------------------
@@ -217,24 +92,7 @@ def create_task(
     status must be one of: backlog, todo, in-progress, review, done.
     Returns the created task id.
     """
-    db = _get_db()
-    m = _get_models()
-
-    task = m.Task(
-        id=str(uuid.uuid4()),
-        project_id=project_id,
-        workspace_id=workspace_id,
-        title=title,
-        description=description,
-        priority=priority,
-        estimated_hours=estimated_hours,
-        status=status,
-        is_daily_focus=False,
-        resources=[]
-    )
-    db.session.add(task)
-    db.session.commit()
-    return {"id": task.id, "title": task.title, "status": "created", "project_id": project_id}
+    return _unwrap(task_tools.create_task(project_id, workspace_id, title, description, priority, estimated_hours, status))
 
 
 @tool
@@ -245,33 +103,7 @@ def create_multiple_tasks(project_id: str, workspace_id: str, tasks: str) -> dic
     Example: '[{"title":"Setup CI","priority":"high","estimated_hours":2}]'
     Returns count of tasks created and their IDs.
     """
-    db = _get_db()
-    m = _get_models()
-
-    try:
-        task_list = json.loads(tasks)
-    except json.JSONDecodeError as e:
-        return {"error": f"Invalid JSON for tasks: {e}"}
-
-    created = []
-    for td in task_list:
-        task = m.Task(
-            id=str(uuid.uuid4()),
-            project_id=project_id,
-            workspace_id=workspace_id,
-            title=td.get("title", "Untitled Task"),
-            description=td.get("description", ""),
-            priority=td.get("priority", "medium"),
-            estimated_hours=td.get("estimated_hours", 1.0),
-            status=td.get("status", "todo"),
-            is_daily_focus=False,
-            resources=[]
-        )
-        db.session.add(task)
-        created.append({"id": task.id, "title": task.title})
-
-    db.session.commit()
-    return {"created_count": len(created), "tasks": created}
+    return _unwrap(task_tools.create_multiple_tasks(project_id, workspace_id, tasks))
 
 
 @tool
@@ -287,22 +119,7 @@ def create_project(
     project_type: build | learning | research | client | campaign.
     Returns the new project id.
     """
-    db = _get_db()
-    m = _get_models()
-
-    project = m.Project(
-        id=str(uuid.uuid4()),
-        workspace_id=workspace_id,
-        company_id=initiative_id,
-        name=name,
-        type=project_type,
-        mission=mission,
-        progress=0,
-        whiteboard=[]
-    )
-    db.session.add(project)
-    db.session.commit()
-    return {"id": project.id, "name": project.name, "status": "created"}
+    return _unwrap(task_tools.create_project(initiative_id, workspace_id, name, project_type, mission))
 
 
 @tool
@@ -317,20 +134,7 @@ def create_initiative(
     color options: indigo, emerald, amber, rose, slate, purple, blue.
     Returns the new initiative id.
     """
-    db = _get_db()
-    m = _get_models()
-
-    initiative = m.Company(
-        id=str(uuid.uuid4()),
-        workspace_id=workspace_id,
-        name=name,
-        mission=mission,
-        color=color,
-        whiteboard=[]
-    )
-    db.session.add(initiative)
-    db.session.commit()
-    return {"id": initiative.id, "name": initiative.name, "status": "created"}
+    return _unwrap(task_tools.create_initiative(workspace_id, name, mission, color))
 
 
 # ---------------------------------------------------------------------------
@@ -345,35 +149,20 @@ def update_task(
     status: Optional[str] = None,
     priority: Optional[str] = None,
     estimated_hours: Optional[float] = None,
-    is_daily_focus: Optional[bool] = None
+    is_daily_focus: Optional[bool] = None,
+    assignee_id: Optional[str] = None,
 ) -> dict:
     """
     Update fields of an existing task. Only pass fields you want to change.
     status options: backlog, todo, in-progress, review, done.
     priority options: low, medium, high, critical.
+    assignee_id: the user id to assign this task to a team member — use this for requests
+    like "assign this task to <person>". Look up the user id from workspace members if you
+    only have a name.
     """
-    db = _get_db()
-    m = _get_models()
-
-    task = db.session.get(m.Task, task_id)
-    if not task:
-        return {"error": f"Task {task_id} not found"}
-
-    if title is not None:
-        task.title = title
-    if description is not None:
-        task.description = description
-    if status is not None:
-        task.status = status
-    if priority is not None:
-        task.priority = priority
-    if estimated_hours is not None:
-        task.estimated_hours = estimated_hours
-    if is_daily_focus is not None:
-        task.is_daily_focus = is_daily_focus
-
-    db.session.commit()
-    return {"id": task.id, "title": task.title, "status": "updated"}
+    return _unwrap(task_tools.update_task(
+        task_id, title, description, status, priority, estimated_hours, is_daily_focus, assignee_id
+    ))
 
 
 @tool
@@ -382,17 +171,7 @@ def update_task_status(task_id: str, new_status: str) -> dict:
     Move a task to a new status column.
     new_status: backlog | todo | in-progress | review | done
     """
-    db = _get_db()
-    m = _get_models()
-
-    task = db.session.get(m.Task, task_id)
-    if not task:
-        return {"error": f"Task {task_id} not found"}
-
-    old_status = task.status
-    task.status = new_status
-    db.session.commit()
-    return {"id": task.id, "title": task.title, "old_status": old_status, "new_status": new_status}
+    return _unwrap(task_tools.update_task_status(task_id, new_status))
 
 
 @tool
@@ -403,22 +182,7 @@ def update_project(
     progress: Optional[int] = None
 ) -> dict:
     """Update a project's name, mission, or progress percentage (0-100)."""
-    db = _get_db()
-    m = _get_models()
-
-    project = db.session.get(m.Project, project_id)
-    if not project:
-        return {"error": f"Project {project_id} not found"}
-
-    if name is not None:
-        project.name = name
-    if mission is not None:
-        project.mission = mission
-    if progress is not None:
-        project.progress = max(0, min(100, progress))
-
-    db.session.commit()
-    return {"id": project.id, "name": project.name, "status": "updated"}
+    return _unwrap(task_tools.update_project(project_id, name, mission, progress))
 
 
 # ---------------------------------------------------------------------------
@@ -428,35 +192,13 @@ def update_project(
 @tool
 def delete_task(task_id: str) -> dict:
     """Permanently delete a task. This cannot be undone."""
-    db = _get_db()
-    m = _get_models()
-
-    task = db.session.get(m.Task, task_id)
-    if not task:
-        return {"error": f"Task {task_id} not found"}
-
-    title = task.title
-    db.session.delete(task)
-    db.session.commit()
-    return {"deleted_task_id": task_id, "title": title, "status": "deleted"}
+    return _unwrap(task_tools.delete_task(task_id))
 
 
 @tool
 def delete_project(project_id: str) -> dict:
     """Permanently delete a project and all its tasks. This cannot be undone."""
-    db = _get_db()
-    m = _get_models()
-
-    project = db.session.get(m.Project, project_id)
-    if not project:
-        return {"error": f"Project {project_id} not found"}
-
-    # Delete all tasks first
-    m.Task.query.filter_by(project_id=project_id).delete()
-    name = project.name
-    db.session.delete(project)
-    db.session.commit()
-    return {"deleted_project_id": project_id, "name": name, "status": "deleted"}
+    return _unwrap(task_tools.delete_project(project_id))
 
 
 # ---------------------------------------------------------------------------
@@ -482,61 +224,7 @@ def create_project_plan(project_id: str, workspace_id: str, plan: str) -> dict:
     The milestone name is embedded into each task's description for board context.
     Returns a summary of what was created.
     """
-    db = _get_db()
-    m = _get_models()
-
-    try:
-        milestones = json.loads(plan)
-    except json.JSONDecodeError as e:
-        return {"error": f"Invalid plan JSON: {e}"}
-
-    if not isinstance(milestones, list):
-        return {"error": "Plan must be a list of milestone objects"}
-
-    created_tasks = []
-    milestone_summary = []
-
-    for milestone in milestones:
-        milestone_name = milestone.get("name", "Milestone")
-        target_week = milestone.get("target_week", "")
-        tasks = milestone.get("tasks", [])
-        milestone_tasks = []
-
-        for td in tasks:
-            description = td.get("description", "")
-            milestone_tag = f"[{milestone_name}]" + (f" [{target_week}]" if target_week else "")
-            full_desc = f"{milestone_tag} {description}".strip()
-
-            task = m.Task(
-                id=str(uuid.uuid4()),
-                project_id=project_id,
-                workspace_id=workspace_id,
-                title=td.get("title", "Untitled Task"),
-                description=full_desc,
-                priority=td.get("priority", "medium"),
-                estimated_hours=td.get("estimated_hours", 2.0),
-                status=td.get("status", "todo"),
-                is_daily_focus=False,
-                resources=[]
-            )
-            db.session.add(task)
-            milestone_tasks.append({"id": task.id, "title": task.title})
-            created_tasks.append(task.id)
-
-        milestone_summary.append({
-            "milestone": milestone_name,
-            "target": target_week,
-            "task_count": len(milestone_tasks),
-            "tasks": milestone_tasks
-        })
-
-    db.session.commit()
-    return {
-        "status": "created",
-        "total_tasks": len(created_tasks),
-        "milestone_count": len(milestones),
-        "milestones": milestone_summary
-    }
+    return _unwrap(task_tools.create_project_plan(project_id, workspace_id, plan))
 
 
 @tool
@@ -545,59 +233,261 @@ def get_project_tasks(project_id: str) -> dict:
     Get all tasks for a specific project, grouped by status.
     Use during planning to understand what already exists before adding more.
     """
-    db = _get_db()
-    m = _get_models()
-
-    project = db.session.get(m.Project, project_id)
-    if not project:
-        return {"error": f"Project {project_id} not found"}
-
-    tasks = m.Task.query.filter_by(project_id=project_id).all()
-    by_status: dict = {}
-    for t in tasks:
-        by_status.setdefault(t.status, []).append({
-            "id": t.id,
-            "title": t.title,
-            "priority": t.priority,
-            "estimated_hours": t.estimated_hours
-        })
-
-    return {
-        "project_id": project_id,
-        "project_name": project.name,
-        "total_tasks": len(tasks),
-        "by_status": by_status
-    }
+    return _unwrap(task_tools.get_project_tasks(project_id))
 
 
 # ---------------------------------------------------------------------------
-# NOTE / CALENDAR TOOLS
+# NOTE TOOLS
 # ---------------------------------------------------------------------------
 
 @tool
 def create_note(workspace_id: str, content: str, project_id: Optional[str] = None) -> dict:
     """Create a note in the workspace, optionally linked to a project."""
-    db = _get_db()
-    m = _get_models()
+    return _unwrap(task_tools.create_note(workspace_id, content, project_id))
 
-    note = m.Note(
-        id=str(uuid.uuid4()),
-        workspace_id=workspace_id,
-        context_id=project_id,
-        content=content,
-        type="general",
-        color="white"
+
+# ---------------------------------------------------------------------------
+# CALENDAR TOOLS
+# ---------------------------------------------------------------------------
+
+@tool
+def list_calendar_events(workspace_id: str, user_id: str, start: str, end: str, scope: Optional[str] = None) -> dict:
+    """
+    List calendar events in an ISO 8601 [start, end) window, with recurring events
+    expanded into concrete occurrences. scope: personal | workspace | company (optional —
+    omit to see everything visible to the user).
+    """
+    return _unwrap(calendar_tools.list_events(
+        workspace_id, user_id, datetime.fromisoformat(start), datetime.fromisoformat(end), scope
+    ))
+
+
+@tool
+def create_calendar_event(
+    workspace_id: str, owner_id: str, title: str, start: str, end: str,
+    event_type: str = "personal", scope: str = "personal", color: str = "blue",
+    timezone: str = "UTC", recurrence_rule: Optional[str] = None, attendees: Optional[list] = None
+) -> dict:
+    """
+    Create a calendar event. start/end are ISO 8601 datetimes.
+    event_type: task_block | meeting | personal | reminder.
+    scope: personal | workspace | company — controls who else can see it.
+    recurrence_rule: RFC5545 RRULE text, e.g. 'FREQ=WEEKLY;BYDAY=MO,WE,FR' (optional).
+    attendees: user IDs, beyond the owner, who can see this event (optional).
+    """
+    return _unwrap(calendar_tools.create_event(
+        workspace_id, owner_id, title, datetime.fromisoformat(start), datetime.fromisoformat(end),
+        event_type, scope, None, color, timezone, recurrence_rule, attendees
+    ))
+
+
+@tool
+def update_calendar_event(
+    event_id: str, title: Optional[str] = None, start: Optional[str] = None,
+    end: Optional[str] = None, color: Optional[str] = None, scope: Optional[str] = None
+) -> dict:
+    """Update fields of an existing calendar event. Only pass fields you want to change."""
+    return _unwrap(calendar_tools.update_event(
+        event_id, title,
+        datetime.fromisoformat(start) if start else None,
+        datetime.fromisoformat(end) if end else None,
+        color, scope
+    ))
+
+
+@tool
+def delete_calendar_event(event_id: str, delete_series: bool = False) -> dict:
+    """Permanently delete a calendar event. This cannot be undone. Set delete_series=true to delete the whole recurring series."""
+    return _unwrap(calendar_tools.delete_event(event_id, delete_series))
+
+
+@tool
+def find_availability(
+    workspace_id: str, attendee_user_ids: list, duration_minutes: int,
+    window_start: str, window_end: str, day_start_hour: int = 9, day_end_hour: int = 18
+) -> dict:
+    """
+    Scan attendees' calendars for open slots within working hours. Use this before
+    scheduling a meeting or focus block instead of guessing a free time. Returns up
+    to 10 candidate slots.
+    """
+    return _unwrap(calendar_tools.find_availability(
+        workspace_id, attendee_user_ids, duration_minutes,
+        datetime.fromisoformat(window_start), datetime.fromisoformat(window_end),
+        day_start_hour, day_end_hour
+    ))
+
+
+@tool
+def auto_schedule_tasks(
+    workspace_id: str, user_id: str, task_ids: Optional[list] = None,
+    day_start_hour: int = 9, day_end_hour: int = 18, weekdays_only: bool = True,
+    target_end_date: Optional[str] = None, block_hours: Optional[float] = None,
+) -> dict:
+    """
+    Auto-schedule tasks into real free calendar slots (never invents a schedule — every
+    block comes from find_availability, so it respects existing events). Without task_ids,
+    schedules every open (non-done, not-yet-scheduled) task in the workspace, highest
+    priority first. target_end_date (ISO date) caps how far out it will look; defaults to
+    14 days out.
+    """
+    return _unwrap(calendar_tools.auto_schedule_tasks(
+        workspace_id, user_id, task_ids=task_ids,
+        day_start_hour=day_start_hour, day_end_hour=day_end_hour, weekdays_only=weekdays_only,
+        window_end=target_end_date, block_hours=block_hours,
+    ))
+
+
+@tool
+def schedule_module_milestones(module_instance_id: str, workspace_id: str, user_id: str, block_hours: float = 2.0) -> dict:
+    """
+    Read an installed module's milestones and auto-create task_block focus events for them,
+    placed via find_availability so they land in genuinely free time near each milestone's
+    due date.
+    """
+    return _unwrap(calendar_tools.schedule_module_milestones(module_instance_id, workspace_id, user_id, block_hours))
+
+
+# ---------------------------------------------------------------------------
+# MODULE MARKETPLACE TOOLS
+# ---------------------------------------------------------------------------
+
+@tool
+def list_modules(category: Optional[str] = None) -> dict:
+    """Browse published marketplace modules (pre-built learning/execution plans), optionally filtered by category: exam_prep | course | project | habit | general."""
+    return _unwrap(module_tools.list_modules(category=category))
+
+
+@tool
+def generate_module(
+    workspace_id: str, owner_id: str, goal: str, title: Optional[str] = None,
+    category: str = "general", difficulty: str = "intermediate"
+) -> dict:
+    """
+    Kick off AI generation of a brand-new module (a multi-milestone learning or execution
+    plan) for a goal, e.g. "UPSC prep in 8 months" or "ship a personal portfolio site".
+    Runs asynchronously — returns a moduleTemplateId immediately with status='pending'.
+    Poll get_module_progress until status='ready', then call install_module.
+    difficulty: beginner | intermediate | advanced.
+    """
+    from flask import current_app
+    draft = module_tools.create_module_draft(
+        title=title or goal[:80], description=goal, category=category,
+        difficulty=difficulty, author_id=owner_id,
     )
-    db.session.add(note)
-    db.session.commit()
-    return {"id": note.id, "status": "created"}
+    if draft["success"]:
+        module_tools.start_generation(
+            current_app._get_current_object(),
+            module_template_id=draft["data"]["moduleTemplateId"],
+            module_template_version_id=draft["data"]["moduleTemplateVersionId"],
+            goal=goal, category=category, difficulty=difficulty,
+        )
+    return _unwrap(draft)
+
+
+@tool
+def get_module_progress(module_template_id: str) -> dict:
+    """Check generation status for a module template: pending | generating | ready | failed."""
+    return _unwrap(module_tools.get_generation_progress_by_template(module_template_id))
+
+
+@tool
+def install_module(module_template_id: str, workspace_id: str, owner_id: str) -> dict:
+    """Install a ready (status='ready') module into the workspace — creates a real project with milestones and tasks."""
+    return _unwrap(module_tools.install_module(module_template_id, workspace_id, owner_id))
+
+
+# ---------------------------------------------------------------------------
+# PROJECT MANAGEMENT TOOLS — milestones, sprints, dependencies (Phase 3)
+# ---------------------------------------------------------------------------
+
+@tool
+def list_milestones(project_id: str) -> dict:
+    """List milestones for a project, ordered by their sequence."""
+    return _unwrap(task_tools.list_milestones(project_id))
+
+
+@tool
+def create_milestone(project_id: str, title: str, description: str = "", due_date: Optional[str] = None, order: int = 0) -> dict:
+    """Create a milestone under a project. due_date is an ISO 8601 date/datetime string (optional)."""
+    return _unwrap(task_tools.create_milestone(project_id, title, description, due_date, order))
+
+
+@tool
+def update_milestone(
+    milestone_id: str, title: Optional[str] = None, description: Optional[str] = None,
+    due_date: Optional[str] = None, status: Optional[str] = None, order: Optional[int] = None
+) -> dict:
+    """Update a milestone. status: pending | in_progress | done. Only pass fields you want to change."""
+    return _unwrap(task_tools.update_milestone(milestone_id, title, description, due_date, status, order))
+
+
+@tool
+def delete_milestone(milestone_id: str) -> dict:
+    """Delete a milestone. Tasks linked to it are unlinked (not deleted)."""
+    return _unwrap(task_tools.delete_milestone(milestone_id))
+
+
+@tool
+def list_sprints(project_id: str) -> dict:
+    """List sprints for a project."""
+    return _unwrap(task_tools.list_sprints(project_id))
+
+
+@tool
+def create_sprint(project_id: str, name: str, start_date: Optional[str] = None, end_date: Optional[str] = None, status: str = "planned") -> dict:
+    """Create a sprint under a project. status: planned | active | completed."""
+    return _unwrap(task_tools.create_sprint(project_id, name, start_date, end_date, status))
+
+
+@tool
+def update_sprint(
+    sprint_id: str, name: Optional[str] = None, start_date: Optional[str] = None,
+    end_date: Optional[str] = None, status: Optional[str] = None
+) -> dict:
+    """Update a sprint. status: planned | active | completed. Only pass fields you want to change."""
+    return _unwrap(task_tools.update_sprint(sprint_id, name, start_date, end_date, status))
+
+
+@tool
+def delete_sprint(sprint_id: str) -> dict:
+    """Delete a sprint. Tasks linked to it are unlinked (not deleted)."""
+    return _unwrap(task_tools.delete_sprint(sprint_id))
+
+
+@tool
+def add_task_dependency(task_id: str, depends_on_task_id: str, dependency_type: str = "blocks") -> dict:
+    """
+    Declare that task_id depends on depends_on_task_id (task_id is blocked until the
+    other task is done). Rejected if it would create a dependency cycle.
+    dependency_type: blocks | blocked_by | relates_to.
+    """
+    return _unwrap(task_tools.add_task_dependency(task_id, depends_on_task_id, dependency_type))
+
+
+@tool
+def remove_task_dependency(dependency_id: str) -> dict:
+    """Remove a task dependency link."""
+    return _unwrap(task_tools.remove_task_dependency(dependency_id))
+
+
+@tool
+def get_task_dependencies(task_id: str) -> dict:
+    """Get what a task depends on and what depends on it."""
+    return _unwrap(task_tools.get_task_dependencies(task_id))
+
+
+@tool
+def get_blocked_tasks(project_id: str) -> dict:
+    """List tasks in a project that are currently blocked by an incomplete dependency."""
+    return _unwrap(task_tools.get_blocked_tasks(project_id))
 
 
 # ---------------------------------------------------------------------------
 # Tool registries by agent role
 # ---------------------------------------------------------------------------
 
-READ_TOOLS = [get_workspace_summary, get_tasks, analyze_workspace_progress, get_projects]
+READ_TOOLS = [get_workspace_summary, get_tasks, analyze_workspace_progress, get_projects, list_workspace_members]
 
 CRUD_TOOLS = [
     create_task, create_multiple_tasks, create_project, create_initiative,
@@ -611,4 +501,26 @@ PLANNING_TOOLS = [
     create_project_plan, create_multiple_tasks, create_project, create_initiative
 ]
 
-ALL_TOOLS = list({t.name: t for t in READ_TOOLS + CRUD_TOOLS}.values())
+CALENDAR_TOOLS = [
+    list_calendar_events, create_calendar_event, update_calendar_event,
+    delete_calendar_event, find_availability, auto_schedule_tasks, schedule_module_milestones,
+]
+
+MODULE_TOOLS = [list_modules, generate_module, get_module_progress, install_module]
+
+# Milestones/sprints/dependencies. Deliberately excludes replan_project (task_tools.py) —
+# that invokes the Core Intelligence Layer's own compiled graph, so it must only be
+# reachable via the dedicated /projects/<id>/replan route and MCP tool, never as a tool
+# an executor_node could call on itself mid-run.
+PM_TOOLS = [
+    list_milestones, create_milestone, update_milestone, delete_milestone,
+    list_sprints, create_sprint, update_sprint, delete_sprint,
+    add_task_dependency, remove_task_dependency, get_task_dependencies, get_blocked_tasks,
+]
+
+# The unified registry — every node in the Core Intelligence Layer (graph_v2) binds to
+# this, so no agent path is missing calendar/module/PM capability the way the old
+# query/crud/analysis agents were (they only ever saw READ_TOOLS + CRUD_TOOLS).
+ALL_TOOLS = list({
+    t.name: t for t in READ_TOOLS + CRUD_TOOLS + CALENDAR_TOOLS + MODULE_TOOLS + PM_TOOLS
+}.values())

@@ -1,22 +1,39 @@
-import logging
-from flask import Flask, jsonify, request, make_response
-from werkzeug.middleware.proxy_fix import ProxyFix
-from .config import Config
-from .extensions import db, migrate, jwt, cors, mail
-from .routes import auth_bp, workspace_bp, agent_bp
-from .api.org import org_bp
-from .api.workspace import workspace_api_bp
+import os
+import uuid as _uuid
+from datetime import datetime
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]
-)
+from flask import Flask, jsonify, request
+from werkzeug.middleware.proxy_fix import ProxyFix
+
+from .core.config import Config
+from .core.extensions import db, migrate, jwt, cors
+from .core.logging import configure_logging
+from .auth.oauth import init_oauth
+
+from .auth.routes import auth_bp
+from .organizations.routes import org_bp
+from .workspaces.routes import workspace_bp
+from .projects.routes import project_bp
+from .tasks.routes import task_bp
+from .notes.routes import note_bp
+from .documents.routes import document_bp
+from .calendar.routes import calendar_bp
+from .analytics.routes import analytics_bp
+from .agents.legacy_routes import agent_bp
+from .chat.routes import chat_bp
+from .billing.routes import billing_bp
+from .modules.routes import module_bp
+
+# Import every domain's models so they're registered on db.metadata before
+# db.create_all()/Alembic run, regardless of which blueprint imports first.
+from . import models  # noqa: F401
+
 
 def create_app(config_class=Config):
     app = Flask(__name__)
     app.config.from_object(config_class)
+
+    configure_logging(app)
 
     # ProxyFix for Cloud Run (HTTPS termination)
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
@@ -25,11 +42,12 @@ def create_app(config_class=Config):
     db.init_app(app)
     migrate.init_app(app, db)
     jwt.init_app(app)
+    init_oauth(app)
 
     cors.init_app(app,
         resources={r"/*": {
             "origins": [
-                "https://sindhai.teams-lab.com",
+                "https://ora.teams-lab.com",
                 "https://gen-lang-client-0256042453.web.app",
                 "http://localhost:5173",
                 "http://localhost:3000"
@@ -41,27 +59,27 @@ def create_app(config_class=Config):
         }}
     )
 
-    mail.init_app(app)
-
-    # Register v1 Blueprints
+    # --- v1 blueprints ---
     app.register_blueprint(auth_bp, url_prefix='/api/v1/auth')
     app.register_blueprint(workspace_bp, url_prefix='/api/v1')
+    app.register_blueprint(project_bp, url_prefix='/api/v1')
+    app.register_blueprint(task_bp, url_prefix='/api/v1')
+    app.register_blueprint(note_bp, url_prefix='/api/v1')
+    app.register_blueprint(document_bp, url_prefix='/api/v1')
+    app.register_blueprint(calendar_bp, url_prefix='/api/v1')
+    app.register_blueprint(analytics_bp, url_prefix='/api/v1')
     app.register_blueprint(agent_bp, url_prefix='/api/v1/agents')
-
-    # Register v2 Enterprise Routes
-    app.register_blueprint(org_bp, url_prefix='/api/v2/orgs')
-    app.register_blueprint(workspace_api_bp, url_prefix='/api/v2/workspaces')
-
-    # Register Agentic Chat Routes (v1/chat)
-    from .api.chat import chat_bp
     app.register_blueprint(chat_bp, url_prefix='/api/v1/chat')
+
+    # --- v2 blueprints (enterprise/org surface) ---
+    app.register_blueprint(org_bp, url_prefix='/api/v2/orgs')
+    app.register_blueprint(billing_bp, url_prefix='/api/v2/billing')
+    app.register_blueprint(module_bp, url_prefix='/api/v2/modules')
 
     # -----------------------------------------------------------------------
     # A2A (Agent-to-Agent) Protocol Endpoints
     # Follows Google's A2A spec: https://google.github.io/A2A
     # -----------------------------------------------------------------------
-    import uuid as _uuid
-    from datetime import datetime
 
     @app.route('/.well-known/agent.json')
     def agent_card():
@@ -69,7 +87,7 @@ def create_app(config_class=Config):
         return jsonify({
             "@context": "https://schema.org/",
             "@type": "AgentCard",
-            "name": "Sindhai Cortex",
+            "name": "Ora Cortex",
             "description": "AI-native OS for project and learning management. Supports CRUD, analysis, and multi-turn planning.",
             "url": request.host_url.rstrip('/'),
             "version": "2.0.0",
@@ -105,7 +123,7 @@ def create_app(config_class=Config):
             ],
             "authentication": {
                 "type": "Bearer",
-                "description": "JWT token from POST /api/v1/auth/verify-otp"
+                "description": "JWT token from POST /api/v1/auth/login"
             },
             "endpoints": {
                 "chat": "/api/v1/chat/sessions",
@@ -137,7 +155,6 @@ def create_app(config_class=Config):
         if not text:
             return jsonify({"error": "No message text provided"}), 400
 
-        # Delegate to the orchestrator synchronously
         try:
             from .agents.orchestrator import create_orchestrator
             from langchain_core.messages import HumanMessage
@@ -177,21 +194,48 @@ def create_app(config_class=Config):
         return jsonify({
             "id": task_id,
             "status": {"state": "completed"},
-            "message": "Sindhai processes tasks synchronously. Check /a2a/tasks/send response."
+            "message": "Ora processes tasks synchronously. Check /a2a/tasks/send response."
         })
+
+    @app.errorhandler(Exception)
+    def handle_uncaught_exception(e):
+        """Last-resort net — guarantees every 500 is logged with a stack trace and
+        request_id before the client sees a generic error, instead of surfacing
+        Flask's default unlogged HTML traceback page."""
+        from werkzeug.exceptions import HTTPException
+        if isinstance(e, HTTPException):
+            return e
+        app.logger.error(
+            "unhandled_exception",
+            exc_info=e,
+            extra={"method": request.method, "path": request.path},
+        )
+        return jsonify({"error": "Internal server error"}), 500
 
     @app.route('/health')
     def health_check():
         return jsonify({
             "status": "healthy",
-            "service": "Sindhai-Cortex",
+            "service": "Ora-Cortex",
             "version": "2.0.0",
             "agents": ["orchestrator", "query", "crud", "planning", "analysis"],
             "protocols": ["REST", "SSE", "MCP", "A2A"]
         })
 
-    # Ensure tables exist (auto-create for MVP)
+    # Auto-create missing tables for zero-config dev (MVP convenience).
+    # Disable via AUTO_CREATE_TABLES=false when schema should come from Alembic
+    # migrations only (e.g. generating/testing migrations, or a hardened prod boot).
+    if os.environ.get('AUTO_CREATE_TABLES', 'true').lower() not in ('false', '0'):
+        with app.app_context():
+            db.create_all()
+
+    # Idempotent — inserts the 5 launch plans if the table is empty, never
+    # overwrites limits an admin has already tuned.
     with app.app_context():
-        db.create_all()
+        try:
+            from .billing.service import seed_plans
+            seed_plans()
+        except Exception as e:
+            app.logger.warning(f"Billing plan seed skipped: {e}")
 
     return app

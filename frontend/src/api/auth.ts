@@ -1,54 +1,43 @@
 import { apiClient } from './client';
-import { User, Workspace } from '../types';
+import { API_BASE_URL } from '../config';
+import { User } from '../types';
 
-export const authApi = {
-    requestOtp: async (email: string) => {
-        return apiClient.post('/auth/request-otp', { email });
-    },
-
-    verifyOtp: async (email: string, code: string) => {
-        const res = await apiClient.post<{ token: string, user: User }>('/auth/verify-otp', { email, code });
-        return res.data;
-    },
-
-    checkUser: async (email: string) => {
-        const res = await apiClient.post('/auth/check-user', { email });
-        return res.data; // { exists: boolean, user?: partialUser }
-    },
-
-    updateProfile: async (data: Partial<User>) => {
-        const res = await apiClient.post('/auth/update-profile', data);
-        return res.data;
-    },
-
-    getCurrentUser: async () => {
-        const res = await apiClient.get<User>('/auth/me');
-        return res.data;
-    }
+export const register = async (email: string, password: string, name?: string): Promise<{ token: string; user: User }> => {
+  const res = await apiClient.post<{ token: string; user: User }>('/auth/register', { email, password, name });
+  return res.data;
 };
 
-export const workspaceApi = {
-    getUserWorkspaces: async (userId: string) => {
-        const res = await apiClient.get<Workspace[]>(`/users/${userId}/workspaces`);
-        return res.data;
-    },
+export const login = async (email: string, password: string): Promise<{ token: string; user: User }> => {
+  const res = await apiClient.post<{ token: string; user: User }>('/auth/login', { email, password });
+  return res.data;
+};
 
-    createWorkspace: async (userId: string, name: string, context: 'personal' | 'company', persona = 'general') => {
-        const res = await apiClient.post('/workspaces', {
-            workspace: {
-                id: crypto.randomUUID(),
-                name,
-                context,
-                type: context === 'personal' ? 'study' : 'project',
-                persona,
-            },
-            userId
-        });
-        return res.data;
-    },
+export const verifyEmailCode = async (code: string): Promise<User> => {
+  const res = await apiClient.post<{ user: User }>('/auth/verify-email', { code });
+  return res.data.user;
+};
 
-    getWorkspaceState: async (workspaceId: string) => {
-        const res = await apiClient.get(`/workspaces/${workspaceId}/full-state`);
-        return res.data;
-    }
+export const resendVerification = async (): Promise<void> => {
+  await apiClient.post('/auth/resend-verification');
+};
+
+export const forgotPassword = async (email: string): Promise<void> => {
+  await apiClient.post('/auth/forgot-password', { email });
+};
+
+export const resetPassword = async (token: string, password: string): Promise<void> => {
+  await apiClient.post('/auth/reset-password', { token, password });
+};
+
+export const oauthLoginUrl = (provider: 'google' | 'microsoft'): string =>
+  `${API_BASE_URL}/api/v1/auth/oauth/${provider}/login`;
+
+export const updateProfile = async (data: Partial<User>): Promise<User> => {
+  const res = await apiClient.post('/auth/update-profile', data);
+  return res.data.user;
+};
+
+export const getCurrentUser = async (): Promise<User> => {
+  const res = await apiClient.get<User>('/auth/me');
+  return res.data;
 };

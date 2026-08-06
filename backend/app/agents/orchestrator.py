@@ -1,5 +1,5 @@
 """
-Sindhai Multi-Agent Orchestrator (LangGraph)
+Ora Multi-Agent Orchestrator (LangGraph)
 
 Architecture:
   User message
@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 load_dotenv()  # ensure .env is loaded when orchestrator is imported standalone
 
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import create_react_agent
@@ -27,8 +28,26 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from .state import AgentState, PlanState
 from .tools import READ_TOOLS, CRUD_TOOLS, PLANNING_TOOLS, ALL_TOOLS
+from .checkpointer import get_checkpointer
+from .llm_tracking import LlmUsageCallback
 
 logger = logging.getLogger(__name__)
+
+FLASH_MODEL_NAME = "gemini-2.5-flash"
+PRO_MODEL_NAME = "gemini-3.1-pro-preview"
+
+
+def _usage_callback(state: AgentState, config: RunnableConfig, node: str, model: str) -> dict:
+    """Build the invoke-time config that attaches an LlmUsageCallback for this node."""
+    thread_id = ((config or {}).get("configurable") or {}).get("thread_id")
+    callback = LlmUsageCallback(
+        session_id=thread_id,
+        workspace_id=state.get("workspace_id"),
+        user_id=state.get("user_id"),
+        node=node,
+        model=model,
+    )
+    return {"callbacks": [callback]}
 
 
 def _extract_text(content) -> str:
@@ -49,8 +68,8 @@ def _extract_text(content) -> str:
 
 def _flash_model():
     return ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash",
-        google_api_key=os.environ.get("API_KEY", ""),
+        model=FLASH_MODEL_NAME,
+        google_api_key=os.environ.get("GEMINI_API_KEY") or os.environ.get("API_KEY", ""),
         temperature=0.2,
         streaming=True
     )
@@ -58,7 +77,7 @@ def _flash_model():
 def _pro_model():
     return ChatGoogleGenerativeAI(
         model="gemini-3.1-pro-preview",
-        google_api_key=os.environ.get("API_KEY", ""),
+        google_api_key=os.environ.get("GEMINI_API_KEY") or os.environ.get("API_KEY", ""),
         temperature=0.3,
         streaming=True
     )
@@ -68,7 +87,7 @@ def _pro_model():
 # SYSTEM PROMPTS
 # ---------------------------------------------------------------------------
 
-ROUTER_SYSTEM = """You are the Sindhai routing intelligence. Classify the user's intent into exactly one of:
+ROUTER_SYSTEM = """You are the Ora routing intelligence. Classify the user's intent into exactly one of:
 - crud     : user wants to CREATE, UPDATE, DELETE tasks/projects/initiatives
 - query    : user wants to READ, LIST, SEARCH, or GET information
 - plan     : user wants to PLAN a new project with AI assistance (multi-turn)
@@ -77,7 +96,7 @@ ROUTER_SYSTEM = """You are the Sindhai routing intelligence. Classify the user's
 Reply with ONLY the lowercase intent word. Nothing else."""
 
 
-QUERY_SYSTEM = """You are Sindhai's Intelligence Layer — the user's personal data expert.
+QUERY_SYSTEM = """You are Ora's Intelligence Layer — the user's personal data expert.
 
 ADAPTIVE FORMAT — choose based on the request type, never default to prose:
 - "how many / what is / who" → ONE precise answer, no preamble
@@ -95,7 +114,7 @@ RULES:
 - Numbers are exact (not "around 3" when you have the data)"""
 
 
-CRUD_SYSTEM = """You are Sindhai's Execution Engine — you act, you don't deliberate.
+CRUD_SYSTEM = """You are Ora's Execution Engine — you act, you don't deliberate.
 
 CONFIRMATION FORMAT after every operation:
 ✓ Created "Task title" (priority) → Project Name
@@ -112,7 +131,7 @@ RULES:
 - Always report IDs of created resources"""
 
 
-ANALYSIS_SYSTEM = """You are Sindhai's Strategic Cortex — a Chief of Staff who thinks in systems.
+ANALYSIS_SYSTEM = """You are Ora's Strategic Cortex — a Chief of Staff who thinks in systems.
 
 MANDATORY STRUCTURE — always use exactly this format:
 
@@ -146,7 +165,7 @@ RULES:
 - Health signals: 🟢 on track · 🟡 watch it · 🔴 critical"""
 
 
-PLANNING_SYSTEM = """You are Sindhai's Planning Cortex — you build execution-ready roadmaps, not wish lists.
+PLANNING_SYSTEM = """You are Ora's Planning Cortex — you build execution-ready roadmaps, not wish lists.
 You are the user's strategic thought partner. Think like a Chief of Staff.
 
 ━━━ PHASE 1: GATHER ━━━
@@ -203,7 +222,7 @@ QUALITY STANDARDS:
 # ROUTER NODE
 # ---------------------------------------------------------------------------
 
-def router_node(state: AgentState) -> dict:
+def router_node(state: AgentState, config: RunnableConfig) -> dict:
     """Classify intent using a fast LLM call. Updates state.intent."""
     messages = state["messages"]
     last_user_msg = next(
@@ -220,7 +239,7 @@ def router_node(state: AgentState) -> dict:
         response = llm.invoke([
             SystemMessage(content=ROUTER_SYSTEM),
             HumanMessage(content=last_user_msg)
-        ])
+        ], config=_usage_callback(state, config, "router", FLASH_MODEL_NAME))
         intent = _extract_text(response.content).strip().lower()
         if intent not in ("crud", "query", "plan", "analyze"):
             intent = "query"  # default
@@ -247,7 +266,7 @@ def build_query_agent():
         prompt=QUERY_SYSTEM
     )
 
-def query_node(state: AgentState) -> dict:
+def query_node(state: AgentState, config: RunnableConfig) -> dict:
     agent = build_query_agent()
     workspace_ctx = state.get("workspace_context", {})
     # Inject workspace context as the first system message
@@ -255,7 +274,10 @@ def query_node(state: AgentState) -> dict:
         SystemMessage(content=f"Workspace context: {json.dumps(workspace_ctx)}")
     ] + state["messages"]
 
-    result = agent.invoke({"messages": enriched_messages})
+    result = agent.invoke(
+        {"messages": enriched_messages},
+        config=_usage_callback(state, config, "query_agent", PRO_MODEL_NAME)
+    )
     return {"messages": result["messages"]}
 
 
@@ -271,7 +293,7 @@ def build_crud_agent():
         prompt=CRUD_SYSTEM
     )
 
-def crud_node(state: AgentState) -> dict:
+def crud_node(state: AgentState, config: RunnableConfig) -> dict:
     agent = build_crud_agent()
     workspace_ctx = state.get("workspace_context", {})
     enriched_messages = [
@@ -281,7 +303,10 @@ def crud_node(state: AgentState) -> dict:
         ))
     ] + state["messages"]
 
-    result = agent.invoke({"messages": enriched_messages})
+    result = agent.invoke(
+        {"messages": enriched_messages},
+        config=_usage_callback(state, config, "crud_agent", FLASH_MODEL_NAME)
+    )
     return {"messages": result["messages"]}
 
 
@@ -297,14 +322,17 @@ def build_analysis_agent():
         prompt=ANALYSIS_SYSTEM
     )
 
-def analysis_node(state: AgentState) -> dict:
+def analysis_node(state: AgentState, config: RunnableConfig) -> dict:
     agent = build_analysis_agent()
     workspace_ctx = state.get("workspace_context", {})
     enriched_messages = [
         SystemMessage(content=f"Workspace context: {json.dumps(workspace_ctx)}")
     ] + state["messages"]
 
-    result = agent.invoke({"messages": enriched_messages})
+    result = agent.invoke(
+        {"messages": enriched_messages},
+        config=_usage_callback(state, config, "analysis_agent", PRO_MODEL_NAME)
+    )
     return {"messages": result["messages"]}
 
 
@@ -320,7 +348,7 @@ def build_planning_agent():
         prompt=PLANNING_SYSTEM
     )
 
-def planning_node(state: AgentState) -> dict:
+def planning_node(state: AgentState, config: RunnableConfig) -> dict:
     agent = build_planning_agent()
     workspace_ctx = state.get("workspace_context", {})
     phase = state.get("planning_phase", "gathering")
@@ -337,7 +365,10 @@ def planning_node(state: AgentState) -> dict:
         ))
     ] + state["messages"]
 
-    result = agent.invoke({"messages": enriched_messages})
+    result = agent.invoke(
+        {"messages": enriched_messages},
+        config=_usage_callback(state, config, "planning_agent", PRO_MODEL_NAME)
+    )
 
     # Advance phase based on conversation signals
     new_phase = phase
@@ -375,14 +406,25 @@ def planning_node(state: AgentState) -> dict:
 # GRAPH ASSEMBLY
 # ---------------------------------------------------------------------------
 
-_checkpointer = MemorySaver()
 _compiled_graph = None
 
 def create_orchestrator():
-    """Return the compiled LangGraph orchestrator (singleton per process)."""
+    """Return the compiled LangGraph orchestrator (singleton per process).
+
+    Checkpointer is durable (Postgres-backed) when DATABASE_URL is available, so
+    conversation/planning state survives restarts and is shared across workers.
+    Falls back to an in-memory checkpointer (e.g. for isolated unit tests) if not.
+    """
     global _compiled_graph
     if _compiled_graph is not None:
         return _compiled_graph
+
+    database_url = os.environ.get("DATABASE_URL")
+    if database_url:
+        checkpointer = get_checkpointer(database_url)
+    else:
+        logger.warning("DATABASE_URL not set — falling back to in-memory checkpointer (state will not persist)")
+        checkpointer = MemorySaver()
 
     graph = StateGraph(AgentState)
 
@@ -410,5 +452,5 @@ def create_orchestrator():
     graph.add_edge("analysis_agent", END)
     graph.add_edge("planning_agent", END)
 
-    _compiled_graph = graph.compile(checkpointer=_checkpointer)
+    _compiled_graph = graph.compile(checkpointer=checkpointer)
     return _compiled_graph

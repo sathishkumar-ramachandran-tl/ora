@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { User, Workspace } from '../types';
-import { authApi, workspaceApi } from '../api/auth';
+import { getCurrentUser } from '../api/auth';
+import { getUserWorkspaces } from '../api/workspace';
 
 interface AuthContextType {
     user: User | null;
@@ -9,6 +10,7 @@ interface AuthContextType {
     isLoading: boolean;
     login: (token: string, user: User) => Promise<void>;
     logout: () => void;
+    refreshUser: () => Promise<void>;
     setWorkspace: (ws: Workspace) => void;
     switchWorkspace: (workspaceId: string) => void;
     refreshWorkspaces: () => Promise<void>;
@@ -16,7 +18,7 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const ACTIVE_WS_KEY = 'sindhai_active_workspace';
+const ACTIVE_WS_KEY = 'ora_active_workspace';
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const [user, setUser] = useState<User | null>(null);
@@ -25,7 +27,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const [isLoading, setIsLoading] = useState(true);
 
     const loadWorkspaces = useCallback(async (userId: string): Promise<Workspace[]> => {
-        const list = await workspaceApi.getUserWorkspaces(userId);
+        const list = await getUserWorkspaces(userId);
         setWorkspaces(list);
         return list;
     }, []);
@@ -55,12 +57,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     useEffect(() => {
         const restoreSession = async () => {
-            const token = localStorage.getItem('sindhai_auth_token');
-            const userId = localStorage.getItem('sindhai_user_id');
+            const token = localStorage.getItem('ora_auth_token');
+            const userId = localStorage.getItem('ora_user_id');
             if (!token || !userId) { setIsLoading(false); return; }
 
             try {
-                const currentUser = await authApi.getCurrentUser();
+                const currentUser = await getCurrentUser();
                 setUser(currentUser);
 
                 const list = await loadWorkspaces(currentUser.id);
@@ -79,8 +81,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }, []);
 
     const login = async (token: string, user: User) => {
-        localStorage.setItem('sindhai_auth_token', token);
-        localStorage.setItem('sindhai_user_id', user.id);
+        localStorage.setItem('ora_auth_token', token);
+        localStorage.setItem('ora_user_id', user.id);
         setUser(user);
         const list = await loadWorkspaces(user.id);
         if (list.length > 0) {
@@ -90,9 +92,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
     };
 
+    const refreshUser = async () => {
+        const currentUser = await getCurrentUser();
+        setUser(currentUser);
+    };
+
     const logout = () => {
-        localStorage.removeItem('sindhai_auth_token');
-        localStorage.removeItem('sindhai_user_id');
+        localStorage.removeItem('ora_auth_token');
+        localStorage.removeItem('ora_user_id');
         localStorage.removeItem(ACTIVE_WS_KEY);
         setUser(null);
         setWorkspaceState(null);
@@ -102,7 +109,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return (
         <AuthContext.Provider value={{
             user, workspace, workspaces, isLoading,
-            login, logout, setWorkspace, switchWorkspace, refreshWorkspaces
+            login, logout, refreshUser, setWorkspace, switchWorkspace, refreshWorkspaces
         }}>
             {children}
         </AuthContext.Provider>

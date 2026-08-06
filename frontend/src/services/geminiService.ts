@@ -10,8 +10,10 @@ const aiClient = axios.create({
 });
 
 aiClient.interceptors.request.use((config) => {
-  const headers = getAuthHeader();
-  config.headers = Object.assign(config.headers || {}, headers);
+  const { Authorization } = getAuthHeader() as { Authorization?: string };
+  if (Authorization) {
+    config.headers.Authorization = Authorization;
+  }
   return config;
 });
 
@@ -26,7 +28,7 @@ export const generateProjectTasks = async (
     onStatusUpdate?: (status: string) => void
 ): Promise<Task[]> => {
   try {
-    if (onStatusUpdate) onStatusUpdate("Connecting to Sindhai Cortex...");
+    if (onStatusUpdate) onStatusUpdate("Connecting to Ora Cortex...");
     
     // The backend handles the Agent Chain (Strategist -> Tactician -> Risk)
     const response = await aiClient.post('/generate-plan', {

@@ -2,11 +2,12 @@ import React from 'react';
 import {
   LayoutDashboard, Network, Calendar, ChevronRight, Plus, PlusCircle,
   HardDrive, Users, LogOut, Languages, Lightbulb, Menu, X,
-  Target, Globe, Briefcase, Bot, Home, FolderOpen,
+  Target, Globe, Briefcase, Bot, Home, FolderOpen, Sparkles,
   ChevronDown, Check, Building2, User
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import { workspaceApi } from '../api/auth';
+import { createWorkspace } from '../api/workspace';
+import { createOrganization } from '../api/org';
 import { Company, Language } from '../types';
 
 interface PersonalLayoutProps {
@@ -94,6 +95,7 @@ export const PersonalLayout: React.FC<PersonalLayoutProps> = ({
     if (activeTab === 'graph') return <><Network className="text-indigo-600 flex-shrink-0" size={18} /><span className="truncate">Knowledge Graph</span></>;
     if (activeTab === 'schedule') return <><Calendar className="text-indigo-600 flex-shrink-0" size={18} /><span className="truncate">Schedule</span></>;
     if (activeTab === 'ideas') return <><Lightbulb className="text-indigo-600 flex-shrink-0" size={18} /><span className="truncate">Idea Incubator</span></>;
+    if (activeTab === 'modules') return <><Sparkles className="text-indigo-600 flex-shrink-0" size={18} /><span className="truncate">Module Marketplace</span></>;
     if (activeTab === 'company' && currentCompany) return <><Globe className="text-indigo-600 flex-shrink-0" size={18} /><span className="truncate">{currentCompany.name}</span></>;
     if (activeTab === 'project' && currentProject) return (
       <>
@@ -102,7 +104,7 @@ export const PersonalLayout: React.FC<PersonalLayoutProps> = ({
         <span className="truncate">{currentProject.name}</span>
       </>
     );
-    return <span className="truncate">Sindhai</span>;
+    return <span className="truncate">Ora</span>;
   };
 
   return (
@@ -131,7 +133,7 @@ export const PersonalLayout: React.FC<PersonalLayoutProps> = ({
               <div className="w-6 h-6 rounded-md bg-indigo-600 flex items-center justify-center flex-shrink-0">
                 <Bot size={12} className="text-white" />
               </div>
-              <span className="text-white font-bold text-sm tracking-tight">Sindhai</span>
+              <span className="text-white font-bold text-sm tracking-tight">Ora</span>
             </div>
             <button onClick={() => setIsSidebarOpen(false)} className="md:hidden text-slate-400 hover:text-white p-1">
               <X size={16} />
@@ -203,7 +205,10 @@ export const PersonalLayout: React.FC<PersonalLayoutProps> = ({
                           onChange={e => setNewWsName(e.target.value)}
                           onKeyDown={async e => {
                             if (e.key === 'Enter' && newWsName.trim() && user) {
-                              await workspaceApi.createWorkspace(user.id, newWsName.trim(), newWsType);
+                              const organizationId = newWsType === 'company'
+                                ? (await createOrganization(newWsName.trim())).id
+                                : undefined;
+                              await createWorkspace(user.id, newWsName.trim(), newWsType, 'general', organizationId);
                               await refreshWorkspaces();
                               setCreatingWs(false); setNewWsName(''); setWsMenuOpen(false);
                             }
@@ -308,10 +313,11 @@ export const PersonalLayout: React.FC<PersonalLayoutProps> = ({
           <div>
             <p className="px-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Second Brain</p>
             {[
+              { id: 'modules', icon: Sparkles, label: 'Modules' },
               { id: 'graph', icon: Network, label: 'Neural Graph' },
               { id: 'ideas', icon: Lightbulb, label: 'Incubator' },
               { id: 'documents', icon: HardDrive, label: 'Vault' },
-              ...(workspace?.type === 'enterprise' ? [{ id: 'team', icon: Users, label: 'Team' }] : []),
+              ...(workspace?.context === 'company' ? [{ id: 'team', icon: Users, label: 'Team' }] : []),
             ].map(({ id, icon: Icon, label }) => (
               <button key={id} onClick={() => { onTabChange(id); setIsSidebarOpen(false); }}
                 className={`w-full flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all

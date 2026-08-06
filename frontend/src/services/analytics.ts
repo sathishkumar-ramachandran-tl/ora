@@ -1,6 +1,6 @@
-import { logEvent } from "./db";
+import { logEvent } from "../api/workspace";
 
-// Analytics Service for Sindhai
+// Analytics Service for Ora
 // Persists events to NeonDB 'activity_logs' table
 
 type EventName = 
@@ -13,6 +13,8 @@ type EventName =
   | 'VIEW_CHANGED'
   | 'AI_AGENT_START'
   | 'AI_AGENT_COMPLETE'
+  | 'AI_REPLAN_START'
+  | 'AI_REPLAN_COMPLETE'
   | 'AI_VOICE_SESSION_START'
   | 'TASK_CREATED'
   | 'TASK_COMPLETED'
@@ -34,7 +36,7 @@ export const trackEvent = (event: EventName, properties?: EventProperties) => {
   // SECURITY: Only log to console in explicit development environments to prevent PII leakage
   // In a real production build, ensure NODE_ENV is set to 'production'
   if (process.env.NODE_ENV === 'development') {
-      console.groupCollapsed(`[Sindhai Analytics] ${event}`);
+      console.groupCollapsed(`[Ora Analytics] ${event}`);
       console.log('Timestamp:', timestamp.toISOString());
       console.log('Properties:', properties);
       console.groupEnd();
@@ -58,6 +60,6 @@ export const trackEvent = (event: EventName, properties?: EventProperties) => {
 
 export const identifyUser = (userId: string, traits?: EventProperties) => {
   if (process.env.NODE_ENV === 'development') {
-    console.log(`[Sindhai Analytics] Identify: ${userId}`, traits);
+    console.log(`[Ora Analytics] Identify: ${userId}`, traits);
   }
 };

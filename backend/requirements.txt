@@ -6,24 +6,34 @@ Flask-Cors==4.0.0
 Flask-JWT-Extended==4.5.3
 gunicorn==21.2.0
 python-dotenv==1.0.0
-Flask-Mail==0.9.1
 
 # Database
 psycopg[binary]
+psycopg-pool>=3.2.0
+
+# Calendar recurrence expansion (RFC5545 RRULE) — Phase 2: Agentic Calendar
+python-dateutil>=2.9.0
 
 # Google AI — must use >=1.0.0; old 0.x is incompatible with google-adk and langchain-google-genai
 google-genai>=1.0.0
 
-# Google APIs
-google-api-python-client
-google-auth-httplib2
-google-auth-oauthlib
+# === DOCUMENT VAULT ===
+google-cloud-storage>=2.18.0   # GCS-backed file upload/download for the Document Vault
+
+# === AUTH ===
+boto3>=1.34.0            # Amazon SES (all transactional email)
+Authlib>=1.3.0            # OAuth2 client (Google, Microsoft sign-in)
+requests>=2.31.0          # used by Authlib's Flask integration
+
+# === BILLING ===
+stripe>=9.0.0
 
 # === AGENTIC AI STACK ===
 
-# LangGraph — multi-agent orchestration + in-memory checkpointing
+# LangGraph — multi-agent orchestration
 langgraph>=0.2.0
 langgraph-checkpoint>=1.0.0
+langgraph-checkpoint-postgres>=2.0.0
 langgraph-prebuilt>=0.1.0
 
 # LangChain — tool definitions and model integration
@@ -32,7 +42,9 @@ langchain-core>=0.3.0
 langchain-google-genai>=2.0.0
 
 # MCP — Model Context Protocol server (stdio transport)
-mcp>=1.0.0
+# Pinned <2.0 — mcp 2.0's Server API is a breaking rewrite (no list_tools()/call_tool()
+# decorators); app/mcp_server.py targets the 1.x low-level Server API.
+mcp>=1.0.0,<2.0.0
 
 # Google ADK — Agent Development Kit
 google-adk>=0.5.0
@@ -40,3 +52,7 @@ google-adk>=0.5.0
 # Async / HTTP utilities
 anyio>=4.0.0
 httpx>=0.27.0
+
+# === TESTING ===
+pytest>=8.0.0
+pytest-flask>=1.3.0
