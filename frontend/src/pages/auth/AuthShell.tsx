@@ -1,33 +1,61 @@
 import React from 'react';
 
-/** Shared shell for every /auth/* screen — a minimal centered white card,
- * consistent with a Google Sign-in-style layout: generous whitespace, a
- * single clear primary action, subtle branding instead of the app's usual
- * glassy/dark surface treatment. */
 export const AuthShell: React.FC<{ title: string; subtitle?: React.ReactNode; children: React.ReactNode }> = ({
   title, subtitle, children,
 }) => (
-  <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4">
-    <div className="w-full max-w-[400px]">
-      <div className="flex flex-col items-center mb-8">
-        <OraMark />
-        <span className="mt-3 text-lg font-semibold text-slate-900 tracking-tight">Ora</span>
-      </div>
-
-      <div className="w-full bg-white border border-slate-200 rounded-2xl shadow-sm p-8">
-        <div className="text-center mb-7">
-          <h1 className="text-xl font-semibold text-slate-900">{title}</h1>
-          {subtitle && <p className="text-slate-500 text-sm mt-1.5">{subtitle}</p>}
+  <div className="min-h-screen bg-ora-canvas text-ora-primary">
+    <div className="grid min-h-screen lg:grid-cols-[1.05fr_0.95fr]">
+      <section className="ora-auth-brand-panel hidden border-r border-white/10 bg-ora-nav px-10 py-10 text-white lg:flex lg:flex-col lg:justify-between">
+        <div className="flex items-center gap-3">
+          <OraMark />
+          <div>
+            <p className="text-lg font-semibold tracking-tight">Ora</p>
+            <p className="text-xs text-white/55">Adaptive workspaces</p>
+          </div>
         </div>
-        {children}
-      </div>
+
+        <div className="max-w-xl">
+          <p className="text-sm font-medium uppercase tracking-[0.22em] text-ora-accent">Plan. Schedule. Adapt.</p>
+          <h1 className="mt-5 text-5xl font-semibold leading-[1.02] tracking-tight">
+            A calm operating layer for personal work and shared teams.
+          </h1>
+          <p className="mt-5 max-w-md text-sm leading-6 text-white/65">
+            Ora keeps goals, projects, schedules, evidence, and team context in one workspace without turning work into an issue tracker.
+          </p>
+        </div>
+
+        <div className="grid max-w-xl grid-cols-3 gap-3 text-xs">
+          {['Personal focus', 'Team context', 'Verified actions'].map(item => (
+            <div key={item} className="ora-nav-surface rounded-lg border border-white/10 bg-ora-nav-surface px-3 py-3 text-white/75">
+              {item}
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <main className="ora-auth-form-plane flex min-h-screen items-center justify-center px-4 py-10">
+        <div className="w-full max-w-[420px]">
+          <div className="mb-8 flex flex-col items-center lg:hidden">
+            <OraMark />
+            <span className="mt-3 text-lg font-semibold tracking-tight">Ora</span>
+          </div>
+
+          <div className="rounded-lg border border-ora-border bg-ora-surface p-7 shadow-sm sm:p-8">
+            <div className="mb-7">
+              <h1 className="text-2xl font-semibold tracking-tight text-ora-primary">{title}</h1>
+              {subtitle && <p className="mt-2 text-sm leading-6 text-ora-secondary">{subtitle}</p>}
+            </div>
+            {children}
+          </div>
+        </div>
+      </main>
     </div>
   </div>
 );
 
 export const OraMark: React.FC<{ size?: number }> = ({ size = 40 }) => (
   <div
-    className="rounded-xl bg-brand-600 flex items-center justify-center shadow-sm"
+    className="rounded-lg bg-ora-accent flex items-center justify-center shadow-sm"
     style={{ width: size, height: size }}
   >
     <span className="text-white font-bold" style={{ fontSize: size * 0.5 }}>O</span>
@@ -53,13 +81,13 @@ export const MicrosoftIcon: React.FC = () => (
 );
 
 export const authInputClass =
-  "block w-full pl-10 pr-3 py-2.5 bg-white border border-slate-300 rounded-lg text-slate-900 placeholder:text-slate-400 " +
-  "focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 outline-none transition-shadow text-sm";
+  "block w-full pl-10 pr-3 py-2.5 bg-ora-surface border border-ora-border rounded-lg text-ora-primary placeholder:text-ora-tertiary " +
+  "focus:border-ora-accent focus:ring-2 focus:ring-ora-accent/20 outline-none transition-shadow text-sm";
 
 export const authPrimaryButtonClass =
-  "w-full py-2.5 px-4 rounded-lg text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 " +
+  "w-full py-2.5 px-4 rounded-lg text-sm font-medium text-white bg-ora-accent hover:bg-ora-accent-hover " +
   "transition-colors flex justify-center disabled:opacity-50 disabled:pointer-events-none";
 
 export const authOAuthButtonClass =
-  "w-full py-2.5 px-4 rounded-lg text-sm font-medium text-slate-700 bg-white border border-slate-300 " +
-  "hover:bg-slate-50 transition-colors flex items-center justify-center gap-2.5";
+  "w-full py-2.5 px-4 rounded-lg text-sm font-medium text-ora-secondary bg-ora-surface border border-ora-border " +
+  "hover:bg-ora-subtle transition-colors flex items-center justify-center gap-2.5";

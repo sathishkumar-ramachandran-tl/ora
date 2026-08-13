@@ -87,9 +87,9 @@ export const LoginScreen: React.FC = () => {
           <OAuthButton provider="google" label="Continue with Google" />
           <OAuthButton provider="microsoft" label="Continue with Microsoft" />
           <div className="flex items-center gap-3 pt-1">
-            <div className="h-px flex-1 bg-slate-200" />
-            <span className="text-[11px] uppercase tracking-wider text-slate-400">or</span>
-            <div className="h-px flex-1 bg-slate-200" />
+            <div className="h-px flex-1 bg-ora-border" />
+            <span className="text-[11px] uppercase tracking-wider text-ora-tertiary">or</span>
+            <div className="h-px flex-1 bg-ora-border" />
           </div>
         </div>
       )}
@@ -97,7 +97,7 @@ export const LoginScreen: React.FC = () => {
       <form onSubmit={mode === 'login' ? handleLogin : mode === 'register' ? handleRegister : handleForgot} className="space-y-4">
         {mode === 'register' && (
           <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1.5">Name</label>
+            <label className="block text-xs font-medium text-ora-secondary mb-1.5">Name</label>
             <div className="relative">
               <UserIcon className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
               <input
@@ -110,7 +110,7 @@ export const LoginScreen: React.FC = () => {
         )}
 
         <div>
-          <label className="block text-xs font-medium text-slate-600 mb-1.5">Email</label>
+          <label className="block text-xs font-medium text-ora-secondary mb-1.5">Email</label>
           <div className="relative">
             <Mail className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
             <input
@@ -123,7 +123,7 @@ export const LoginScreen: React.FC = () => {
 
         {mode !== 'forgot' && (
           <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1.5">Password</label>
+            <label className="block text-xs font-medium text-ora-secondary mb-1.5">Password</label>
             <div className="relative">
               <Lock className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
               <input
@@ -134,7 +134,7 @@ export const LoginScreen: React.FC = () => {
             </div>
             {mode === 'login' && (
               <button type="button" onClick={() => { setMode('forgot'); resetFeedback(); }}
-                className="mt-2 text-xs text-slate-500 hover:text-brand-600">
+                className="mt-2 text-xs text-ora-secondary hover:text-ora-accent">
                 Forgot password?
               </button>
             )}
@@ -150,12 +150,12 @@ export const LoginScreen: React.FC = () => {
         </button>
 
         {mode === 'forgot' ? (
-          <button type="button" onClick={() => { setMode('login'); resetFeedback(); }} className="w-full text-xs text-slate-500 hover:text-brand-600">
+          <button type="button" onClick={() => { setMode('login'); resetFeedback(); }} className="w-full text-xs text-ora-secondary hover:text-ora-accent">
             Back to sign in
           </button>
         ) : (
           <button type="button" onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); resetFeedback(); }}
-            className="w-full text-xs text-slate-500 hover:text-brand-600">
+            className="w-full text-xs text-ora-secondary hover:text-ora-accent">
             {mode === 'login' ? "Don't have an account? Create one" : 'Already have an account? Sign in'}
           </button>
         )}

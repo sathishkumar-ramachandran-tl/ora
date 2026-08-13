@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { User, CustomRole, Project, Company } from '../../types';
-import { Users, Shield, Plus, MoreHorizontal, UserPlus, Trash2, X, Loader2, Mail, CheckCircle2, ChevronDown } from 'lucide-react';
+import { Users, Plus, UserPlus, Trash2, X, Loader2, Mail, CheckCircle2, ChevronDown } from 'lucide-react';
 import { getWorkspaceMembers, addMemberToWorkspace, removeWorkspaceMember } from '../../api/workspace';
 import { getProjectMembers, assignUserToProject, removeUserFromProject } from '../../api/projects';
 import { trackEvent } from '../../services/analytics';
@@ -127,60 +127,63 @@ export const TeamManagement: React.FC<TeamManagementProps> = ({ workspaceId, cus
   };
 
   return (
-    <div className="h-full bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col">
+    <div className="mx-auto flex h-full max-w-6xl flex-col overflow-hidden">
         {/* Header */}
-        <div className="p-4 flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center bg-slate-50 border-b border-slate-200">
+        <div className="flex flex-col gap-4 border-b border-ora-border pb-5 sm:flex-row sm:items-end sm:justify-between">
             <div>
-                <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
-                    <Users className="text-indigo-600" /> Team & Permissions
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-ora-tertiary">Team workspace</p>
+                <h2 className="mt-2 flex items-center gap-2 text-3xl font-semibold tracking-tight text-ora-primary">
+                    <Users className="text-ora-accent" /> Members and access
                 </h2>
-                <p className="text-sm text-slate-500 mt-1">Manage access to this Neural Workspace.</p>
+                <p className="mt-2 max-w-2xl text-sm leading-6 text-ora-secondary">
+                    Invite collaborators, review responsibility, and keep project access aligned with the workspace.
+                </p>
             </div>
             <button 
                 onClick={() => setInviteModalOpen(true)}
-                className="w-full sm:w-auto bg-slate-900 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-slate-800 transition-colors flex items-center justify-center gap-2"
+                className="w-full sm:w-auto bg-ora-accent text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-ora-accent-hover transition-colors flex items-center justify-center gap-2"
             >
                 <UserPlus size={16} /> Invite Member
             </button>
         </div>
 
         {/* Tabs */}
-        <div className="flex border-b border-slate-200">
+        <div className="mt-4 flex border-b border-ora-border">
           <button
             onClick={() => setActiveTab('members')}
-            className={`flex-1 px-4 py-3 text-sm font-medium text-center ${activeTab === 'members' ? 'border-b-2 border-indigo-600 text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
+            className={`flex-1 px-4 py-3 text-sm font-medium text-center ${activeTab === 'members' ? 'border-b-2 border-ora-accent text-ora-accent' : 'text-ora-secondary hover:text-ora-primary'}`}
           >
             Workspace Members ({members.length})
           </button>
           <button
             onClick={() => setActiveTab('projects')}
-            className={`flex-1 px-4 py-3 text-sm font-medium text-center ${activeTab === 'projects' ? 'border-b-2 border-indigo-600 text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
+            className={`flex-1 px-4 py-3 text-sm font-medium text-center ${activeTab === 'projects' ? 'border-b-2 border-ora-accent text-ora-accent' : 'text-ora-secondary hover:text-ora-primary'}`}
           >
             Project Access
           </button>
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-auto p-6">
+        <div className="flex-1 overflow-auto py-6">
             {activeTab === 'members' ? (
               loading ? (
                 <div className="flex justify-center py-10"><Loader2 className="animate-spin text-indigo-500" /></div>
               ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <div className="divide-y divide-ora-border rounded-lg border border-ora-border bg-ora-surface">
                     {members.map((member) => (
-                        <div key={member.id} className="border border-slate-200 rounded-xl p-4 flex items-center gap-4 hover:shadow-md transition-shadow group relative bg-white">
-                            <div className="w-12 h-12 rounded-full bg-slate-100 overflow-hidden border border-slate-200 flex-shrink-0">
+                        <div key={member.id} className="p-4 flex items-center gap-4 transition-colors group relative hover:bg-ora-subtle/70">
+                            <div className="w-12 h-12 rounded-full bg-ora-subtle overflow-hidden border border-ora-border flex-shrink-0">
                                 <img src={member.avatar || `https://ui-avatars.com/api/?name=${member.name}`} alt={member.name} className="w-full h-full object-cover" />
                             </div>
                             <div className="flex-1 min-w-0">
-                                <h3 className="font-bold text-slate-800 truncate">{member.name}</h3>
-                                <p className="text-xs text-slate-500 truncate">{member.email}</p>
-                                <span className={`inline-block mt-2 text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${member.role === 'owner' ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-600'}`}>
+                                <h3 className="font-bold text-ora-primary truncate">{member.name}</h3>
+                                <p className="text-xs text-ora-secondary truncate">{member.email}</p>
+                                <span className={`inline-block mt-2 text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${member.role === 'owner' ? 'bg-ora-accent-soft text-ora-accent' : 'bg-ora-subtle text-ora-secondary'}`}>
                                     {member.role === 'owner' ? 'Owner' : 'Contributor'}
                                 </span>
                             </div>
                             {member.role !== 'owner' && (
-                              <button onClick={() => handleRemoveFromWorkspace(member.id)} className="absolute top-4 right-4 text-slate-300 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100">
+                              <button onClick={() => handleRemoveFromWorkspace(member.id)} className="absolute top-4 right-4 text-ora-tertiary hover:text-ora-danger transition-colors opacity-0 group-hover:opacity-100">
                                   <Trash2 size={16} />
                               </button>
                             )}
@@ -191,12 +194,12 @@ export const TeamManagement: React.FC<TeamManagementProps> = ({ workspaceId, cus
             ) : (
               <div className="space-y-4">
                 {companies.length === 0 ? (
-                  <p className="text-slate-500 text-center py-8">No projects found. Create a company and projects first.</p>
+                  <p className="text-ora-secondary text-center py-8">No projects found. Create a company and projects first.</p>
                 ) : (
                   companies.map(company => (
                     <div key={company.id}>
                       {company.projects && company.projects.map(project => (
-                        <div key={project.id} className="border border-slate-200 rounded-lg overflow-hidden mb-3">
+                        <div key={project.id} className="border border-ora-border rounded-lg overflow-hidden mb-3 bg-ora-surface">
                           <button
                             onClick={() => {
                               setExpandedProject(expandedProject === project.id ? null : project.id);
@@ -204,25 +207,25 @@ export const TeamManagement: React.FC<TeamManagementProps> = ({ workspaceId, cus
                                 loadProjectMembers(project.id);
                               }
                             }}
-                            className="w-full px-4 py-3 bg-slate-50 hover:bg-slate-100 flex items-center justify-between text-left transition-colors"
+                            className="w-full px-4 py-3 bg-ora-surface-subtle hover:bg-ora-subtle flex items-center justify-between text-left transition-colors"
                           >
                             <div>
-                              <h3 className="font-bold text-slate-800">{project.name}</h3>
-                              <p className="text-xs text-slate-500">{company.name}</p>
+                              <h3 className="font-bold text-ora-primary">{project.name}</h3>
+                              <p className="text-xs text-ora-secondary">{company.name}</p>
                             </div>
-                            <ChevronDown size={18} className={`text-slate-400 transition-transform ${expandedProject === project.id ? 'rotate-180' : ''}`} />
+                            <ChevronDown size={18} className={`text-ora-tertiary transition-transform ${expandedProject === project.id ? 'rotate-180' : ''}`} />
                           </button>
                           
                           {expandedProject === project.id && (
-                            <div className="p-4 border-t border-slate-200 space-y-3">
+                            <div className="p-4 border-t border-ora-border space-y-3">
                               <div className="flex justify-between items-center mb-3">
-                                <p className="text-sm font-medium text-slate-700">Assigned Members:</p>
+                                <p className="text-sm font-medium text-ora-secondary">Assigned Members:</p>
                                 <button
                                   onClick={() => {
                                     setSelectedProject(project);
                                     setAssignModalOpen(true);
                                   }}
-                                  className="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded hover:bg-indigo-200 transition-colors flex items-center gap-1"
+                                  className="text-xs bg-ora-accent-soft text-ora-accent px-2 py-1 rounded hover:bg-ora-accent-soft/70 transition-colors flex items-center gap-1"
                                 >
                                   <Plus size={14} /> Assign
                                 </button>
@@ -231,21 +234,21 @@ export const TeamManagement: React.FC<TeamManagementProps> = ({ workspaceId, cus
                               {projectLoading[project.id] ? (
                                 <div className="flex justify-center py-4"><Loader2 className="animate-spin w-4 h-4 text-indigo-500" /></div>
                               ) : projectMembers[project.id]?.length === 0 ? (
-                                <p className="text-xs text-slate-500 italic py-2">No members assigned yet</p>
+                                <p className="text-xs text-ora-secondary italic py-2">No members assigned yet</p>
                               ) : (
                                 <div className="space-y-2">
                                   {projectMembers[project.id]?.map(member => (
-                                    <div key={member.id} className="flex items-center justify-between bg-white p-2 rounded border border-slate-100 group">
+                                    <div key={member.id} className="flex items-center justify-between bg-ora-surface p-2 rounded border border-ora-border group">
                                       <div className="flex items-center gap-2 flex-1 min-w-0">
                                         <img src={member.avatar || `https://ui-avatars.com/api/?name=${member.name}`} alt={member.name} className="w-8 h-8 rounded-full" />
                                         <div className="min-w-0">
-                                          <p className="text-sm font-medium text-slate-800 truncate">{member.name}</p>
-                                          <p className="text-xs text-slate-500 truncate">{member.email}</p>
+                                          <p className="text-sm font-medium text-ora-primary truncate">{member.name}</p>
+                                          <p className="text-xs text-ora-secondary truncate">{member.email}</p>
                                         </div>
                                       </div>
                                       <button
                                         onClick={() => handleRemoveFromProject(project.id, member.id)}
-                                        className="text-slate-300 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100 ml-2"
+                                        className="text-ora-tertiary hover:text-ora-danger transition-colors opacity-0 group-hover:opacity-100 ml-2"
                                       >
                                         <Trash2 size={14} />
                                       </button>

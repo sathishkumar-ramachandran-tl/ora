@@ -15,6 +15,9 @@ class ChatSession(db.Model):
     user_id = db.Column(db.String, db.ForeignKey('users.id'))
     title = db.Column(db.String, default='New Conversation')
     context = db.Column(JSONB, default=dict)
+    scope_level = db.Column(db.String, default='workspace')
+    scope_project_id = db.Column(db.String, db.ForeignKey('projects.id'), nullable=True)
+    scope_task_id = db.Column(db.String, db.ForeignKey('tasks.id'), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

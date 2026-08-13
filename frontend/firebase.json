@@ -10,7 +10,7 @@
       {
         "source": "/api/**",
         "run": {
-          "serviceId": "sindhai-backend",
+          "serviceId": "ora-backend",
           "region": "asia-south1"
         }
       },

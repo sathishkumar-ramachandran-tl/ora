@@ -51,8 +51,8 @@ class LlmUsageCallback(BaseCallbackHandler):
                     usage.get("output_tokens", 0) or 0,
                     usage.get("total_tokens", 0) or 0,
                 )
-        except Exception:
-            pass
+        except (AttributeError, IndexError, TypeError) as exc:
+            logger.debug("LLM usage metadata unavailable", extra={"error": type(exc).__name__})
         return 0, 0, 0
 
     def on_llm_end(self, response, *, run_id, **kwargs):

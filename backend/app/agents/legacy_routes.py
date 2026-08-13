@@ -7,6 +7,7 @@ main agentic surface — that's app/agents/orchestrator.py + app/api/chat.py.
 import asyncio
 import base64
 import logging
+import uuid
 from datetime import datetime
 
 from flask import Blueprint, request, jsonify, current_app
@@ -14,12 +15,39 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from sqlalchemy import func
 
 from .legacy_ai_service import AIService
-from .models import LlmCall
+from .execution_context import ExecutionContext, execution_context
+from .models import AgentAction, AgentRun, LlmCall
+from .undo import undo_action
 from ..core.extensions import db
 from ..workspaces.models import WorkspaceMember
 
 logger = logging.getLogger(__name__)
 agent_bp = Blueprint('agent', __name__)
+
+
+@agent_bp.route('/actions/<action_id>/undo', methods=['POST'])
+@jwt_required()
+def undo_agent_action(action_id):
+    action = db.session.get(AgentAction, action_id)
+    if not action:
+        return jsonify({"error": "Action not found"}), 404
+    run = db.session.get(AgentRun, action.run_id)
+    user_id = get_jwt_identity()
+    if not run:
+        return jsonify({"error": "Agent run not found"}), 404
+    from ..core.authz import user_can_access_workspace
+    if not user_can_access_workspace(user_id, run.workspace_id):
+        return jsonify({"error": "Forbidden"}), 403
+    ctx = ExecutionContext(
+        request_id=str(uuid.uuid4()),
+        user_id=user_id,
+        workspace_id=run.workspace_id,
+        session_id=run.session_id,
+        run_id=run.id,
+    )
+    with execution_context(ctx):
+        result = undo_action(action_id)
+    return jsonify(result["data"] if result["success"] else {"error": result["error"]}), 200 if result["success"] else 409
 
 
 @agent_bp.route('/llm-usage', methods=['GET'])

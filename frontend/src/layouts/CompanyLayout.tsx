@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import {
-  Building2, LayoutDashboard, FolderKanban,
-  Users, ShieldCheck, Menu, X, ChevronDown
+  Building2, FolderKanban,
+  Users, ShieldCheck, Menu, X, Home, Target, Search, Library, Zap, Sparkles
 } from 'lucide-react';
 import { Organization } from '../types';
 
@@ -15,9 +15,14 @@ interface CompanyLayoutProps {
 }
 
 const TABS = [
-  { id: 'overview', icon: LayoutDashboard, label: 'Overview', short: 'Home' },
+  { id: 'dashboard', icon: Home, label: 'Home', short: 'Home' },
+  { id: 'work', icon: Target, label: 'Work', short: 'Work' },
+  { id: 'search', icon: Search, label: 'Search', short: 'Search' },
   { id: 'projects', icon: FolderKanban, label: 'Projects', short: 'Projects' },
   { id: 'team', icon: Users, label: 'Team', short: 'Team' },
+  { id: 'documents', icon: Library, label: 'Library', short: 'Library' },
+  { id: 'automations', icon: Zap, label: 'Automations', short: 'Auto' },
+  { id: 'modules', icon: Sparkles, label: 'Capabilities', short: 'Skills' },
   { id: 'admin', icon: ShieldCheck, label: 'Settings', short: 'Settings' },
 ];
 
@@ -29,7 +34,7 @@ export const CompanyLayout: React.FC<CompanyLayoutProps> = ({
   const activeTabInfo = TABS.find(t => t.id === activeTab);
 
   return (
-    <div className="flex h-screen bg-slate-50 overflow-hidden">
+    <div className="flex h-screen bg-ora-canvas overflow-hidden">
       {/* Mobile backdrop */}
       {isSidebarOpen && (
         <div
@@ -40,22 +45,22 @@ export const CompanyLayout: React.FC<CompanyLayoutProps> = ({
 
       {/* Sidebar */}
       <aside className={`
-        fixed inset-y-0 left-0 z-50 w-64 bg-slate-900 text-white flex flex-col
-        shadow-2xl border-r border-slate-800 transition-transform duration-300 ease-in-out
+        ora-app-sidebar fixed inset-y-0 left-0 z-50 w-64 bg-ora-nav text-white flex flex-col
+        shadow-2xl border-r border-white/10 transition-transform duration-300 ease-in-out
         md:relative md:translate-x-0
         ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}
       `}>
         {/* Brand */}
-        <div className="px-4 pt-5 pb-4 border-b border-slate-800">
+        <div className="px-4 pt-5 pb-4 border-b border-white/10">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center flex-shrink-0">
+            <div className="w-8 h-8 bg-ora-accent rounded-lg flex items-center justify-center flex-shrink-0">
               <Building2 size={16} className="text-white" />
             </div>
             <div className="min-w-0 flex-1">
               <p className="font-bold text-white text-sm truncate leading-tight">{organization.name}</p>
-              <p className="text-[10px] text-blue-400 font-medium">Company Workspace</p>
+              <p className="text-[10px] text-ora-accent font-medium">Team workspace</p>
             </div>
-            <button onClick={() => setIsSidebarOpen(false)} className="md:hidden text-slate-400 hover:text-white p-1">
+            <button onClick={() => setIsSidebarOpen(false)} className="md:hidden text-ora-nav-muted hover:text-white p-1">
               <X size={16} />
             </button>
           </div>
@@ -68,8 +73,8 @@ export const CompanyLayout: React.FC<CompanyLayoutProps> = ({
               onClick={() => { onTabChange(id); setIsSidebarOpen(false); }}
               className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all
                 ${activeTab === id
-                  ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20'
-                  : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'}`}>
+                  ? 'bg-ora-accent/15 text-white border border-ora-accent/35 shadow-[inset_3px_0_0_rgb(var(--ora-accent))]'
+                  : 'text-ora-nav-muted hover:bg-white/10 hover:text-white'}`}>
               <Icon size={16} />
               {label}
             </button>
@@ -77,14 +82,14 @@ export const CompanyLayout: React.FC<CompanyLayoutProps> = ({
         </nav>
 
         {/* User badge */}
-        <div className="p-3 border-t border-slate-800">
-          <div className="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-slate-800/60">
-            <div className="w-7 h-7 rounded-full bg-blue-500 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
+        <div className="p-3 border-t border-white/10">
+          <div className="ora-nav-surface flex items-center gap-2.5 px-3 py-2 rounded-lg bg-ora-nav-surface border border-white/10">
+            <div className="w-7 h-7 rounded-full bg-ora-accent flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
               {userInitials}
             </div>
             <div className="min-w-0 flex-1">
-              <p className="text-[11px] font-semibold text-slate-300 truncate">Admin</p>
-              <p className="text-[10px] text-slate-500">{organization.name}</p>
+              <p className="text-[11px] font-semibold text-white truncate">Admin</p>
+              <p className="text-[10px] text-ora-nav-muted">{organization.name}</p>
             </div>
             <ShieldCheck size={12} className="text-amber-400 flex-shrink-0" />
           </div>
@@ -92,25 +97,25 @@ export const CompanyLayout: React.FC<CompanyLayoutProps> = ({
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 overflow-hidden flex flex-col w-full min-w-0">
+      <main className="ora-app-main flex-1 overflow-hidden flex flex-col w-full min-w-0">
         {/* Header */}
-        <header className="h-13 bg-white border-b border-slate-200 flex items-center px-4 justify-between flex-shrink-0 z-30">
+        <header className="h-13 bg-ora-canvas/92 border-b border-ora-border flex items-center px-4 justify-between flex-shrink-0 z-30">
           <div className="flex items-center gap-3 min-w-0">
             <button
               onClick={() => setIsSidebarOpen(true)}
-              className="text-slate-600 hover:bg-slate-100 p-2 rounded-lg transition-colors flex-shrink-0 md:hidden">
+              className="text-ora-secondary hover:bg-ora-subtle p-2 rounded-lg transition-colors flex-shrink-0 md:hidden">
               <Menu size={18} />
             </button>
             <div className="min-w-0">
-              <h1 className="font-bold text-slate-800 text-sm md:text-base truncate leading-tight">
+              <h1 className="font-bold text-ora-primary text-sm md:text-base truncate leading-tight">
                 {activeTabInfo?.label ?? 'Company'}
               </h1>
-              <span className="text-[10px] text-slate-400 hidden sm:block">{organization.name}</span>
+              <span className="text-[10px] text-ora-tertiary hidden sm:block">{organization.name}</span>
             </div>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
             {headerActions}
-            <span className="px-2 py-0.5 bg-blue-50 border border-blue-200 rounded text-[10px] font-bold text-blue-600 uppercase tracking-wide hidden sm:block">
+            <span className="px-2 py-0.5 bg-ora-accent-soft border border-ora-accent/20 rounded text-[10px] font-bold text-ora-accent uppercase tracking-wide hidden sm:block">
               Company
             </span>
           </div>
@@ -122,14 +127,14 @@ export const CompanyLayout: React.FC<CompanyLayoutProps> = ({
         </div>
 
         {/* Mobile bottom nav */}
-        <nav className="md:hidden border-t border-slate-200 bg-white flex-shrink-0">
+        <nav className="md:hidden border-t border-ora-border bg-ora-surface flex-shrink-0">
           <div className="flex items-center justify-around px-2 py-1.5">
             {TABS.map(({ id, icon: Icon, short }) => (
               <button
                 key={id}
                 onClick={() => onTabChange(id)}
                 className={`flex flex-col items-center gap-0.5 flex-1 py-1.5 rounded-lg transition-all
-                  ${activeTab === id ? 'text-blue-600' : 'text-slate-400'}`}>
+                  ${activeTab === id ? 'text-ora-accent' : 'text-ora-tertiary'}`}>
                 <Icon size={18} strokeWidth={activeTab === id ? 2.5 : 1.5} />
                 <span className="text-[9px] font-medium">{short}</span>
               </button>

@@ -118,3 +118,30 @@ def test_user_cannot_enumerate_another_users_workspace_list(app, client, db):
         headers={"Authorization": f"Bearer {attacker_token}"},
     )
     assert resp.status_code == 403
+
+
+def test_company_workspace_member_can_read_workspace_projects_without_project_membership(app, client, db):
+    from app.projects.models import Company, Project
+
+    with app.app_context():
+        owner = _make_user("company-owner@example.com")
+        member = _make_user("company-member@example.com")
+        ws = Workspace(id="ws-company-visible", name="Shared Studio", context="company", owner_id=owner.id)
+        db.session.add(ws)
+        db.session.add(WorkspaceMember(workspace_id=ws.id, user_id=owner.id, role_id="owner"))
+        db.session.add(WorkspaceMember(workspace_id=ws.id, user_id=member.id, role_id="member"))
+        company = Company(id="company-visible", workspace_id=ws.id, name="Client Work", mission="Ship together")
+        project = Project(id="project-visible", workspace_id=ws.id, company_id=company.id, name="Launch Plan", type="build")
+        db.session.add(company)
+        db.session.add(project)
+        db.session.commit()
+        member_token = _token(member)
+
+    resp = client.get(
+        "/api/v1/workspaces/ws-company-visible/full-state",
+        headers={"Authorization": f"Bearer {member_token}"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body[0]["projects"][0]["id"] == "project-visible"

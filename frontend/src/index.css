@@ -3,15 +3,91 @@
 @tailwind utilities;
 
 :root {
+  --ora-canvas: 242 244 241;
+  --ora-surface: 255 255 255;
+  --ora-surface-subtle: 233 237 232;
+  --ora-text-primary: 24 32 29;
+  --ora-text-secondary: 98 106 102;
+  --ora-text-tertiary: 146 153 149;
+  --ora-border: 215 221 216;
+  --ora-border-strong: 194 204 196;
+  --ora-nav: 23 32 30;
+  --ora-nav-surface: 32 44 40;
+  --ora-nav-muted: 164 176 169;
+  --ora-accent: 35 103 232;
+  --ora-accent-hover: 25 87 203;
+  --ora-accent-strong: 21 72 168;
+  --ora-accent-soft: 234 241 255;
+  --ora-success: 15 112 77;
+  --ora-success-soft: 231 247 239;
+  --ora-warning: 138 86 15;
+  --ora-warning-soft: 255 243 214;
+  --ora-danger: 182 53 45;
+  --ora-danger-soft: 252 232 230;
+  --ora-info: 49 95 143;
+  --ora-info-soft: 234 243 255;
   font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
   line-height: 1.5;
   font-weight: 400;
+  color: rgb(var(--ora-text-primary, 24 32 29));
+  background: rgb(var(--ora-canvas, 246 247 245));
+  color-scheme: light;
+}
+
+.dark,
+[data-theme="dark"] {
+  --ora-canvas: 18 24 22;
+  --ora-surface: 24 32 29;
+  --ora-surface-subtle: 34 43 39;
+  --ora-text-primary: 246 247 245;
+  --ora-text-secondary: 198 204 200;
+  --ora-text-tertiary: 143 151 146;
+  --ora-border: 52 63 58;
+  --ora-border-strong: 74 88 81;
+  --ora-nav: 10 15 14;
+  --ora-nav-surface: 22 31 28;
+  --ora-nav-muted: 143 151 146;
+  --ora-accent: 126 165 255;
+  --ora-accent-hover: 169 195 255;
+  --ora-accent-strong: 198 214 255;
+  --ora-accent-soft: 28 48 88;
+  --ora-success: 84 196 148;
+  --ora-success-soft: 22 52 40;
+  --ora-warning: 226 166 69;
+  --ora-warning-soft: 61 45 20;
+  --ora-danger: 238 111 102;
+  --ora-danger-soft: 65 31 29;
+  --ora-info: 122 170 221;
+  --ora-info-soft: 24 43 64;
+  color-scheme: dark;
 }
 
 body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  background: rgb(var(--ora-canvas, 246 247 245));
+  color: rgb(var(--ora-text-primary, 24 32 29));
+}
+
+/*
+  Critical plane fallbacks. These class hooks intentionally mirror the token
+  utilities so the app shell keeps its identity even when an older dev process,
+  cached CSS, or a Tailwind rebuild edge case leaves utility classes stale.
+*/
+.ora-auth-brand-panel,
+.ora-app-sidebar {
+  background-color: rgb(var(--ora-nav, 23 32 30)) !important;
+  color: rgb(255 255 255);
+}
+
+.ora-app-main,
+.ora-auth-form-plane {
+  background-color: rgb(var(--ora-canvas, 242 244 241)) !important;
+}
+
+.ora-nav-surface {
+  background-color: rgb(var(--ora-nav-surface, 32 44 40)) !important;
 }
 
 #root {
@@ -19,7 +95,22 @@ body {
   height: 100vh;
 }
 
-h1 {
-  font-size: 3.2em;
-  line-height: 1.1;
+* {
+  box-sizing: border-box;
+}
+
+:focus-visible {
+  outline: 2px solid rgb(var(--ora-accent, 35 103 232));
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
 }

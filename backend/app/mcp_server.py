@@ -25,6 +25,10 @@ from mcp.types import (
 )
 
 from app import create_app
+from app.core.extensions import db
+from app.agents.action_executor import create_agent_run
+from app.agents.control_plane import AgentRunStatus
+from app.agents.execution_context import ExecutionContext, execution_context, get_execution_context
 from app.tools import task_tools, module_tools, calendar_tools
 
 # MCP Server instance
@@ -44,6 +48,18 @@ def _result(payload: dict) -> dict:
     if payload["success"]:
         return payload["data"]
     return {"error": payload["error"]}
+
+
+def _new_context(session_id: str | None = None, run_id: str | None = None) -> ExecutionContext:
+    import uuid
+
+    return ExecutionContext(
+        request_id=str(uuid.uuid4()),
+        user_id=_config.get("user_id", ""),
+        workspace_id=_config.get("workspace_id", ""),
+        session_id=session_id,
+        run_id=run_id or str(uuid.uuid4()),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -447,215 +463,10 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
 
     try:
         with _flask_app.app_context():
-            if name == "ora_list_tasks":
-                result = _result(task_tools.get_tasks(
-                    ws_id,
-                    arguments.get("project_id"),
-                    arguments.get("status"),
-                    arguments.get("priority"),
-                ))
-
-            elif name == "ora_create_task":
-                result = _result(task_tools.create_task(
-                    arguments["project_id"], ws_id, arguments["title"],
-                    arguments.get("description", ""),
-                    arguments.get("priority", "medium"),
-                    arguments.get("estimated_hours", 1.0),
-                ))
-
-            elif name == "ora_update_task":
-                result = _result(task_tools.update_task(
-                    arguments["task_id"],
-                    title=arguments.get("title"),
-                    description=arguments.get("description"),
-                    status=arguments.get("status"),
-                    priority=arguments.get("priority"),
-                    estimated_hours=arguments.get("estimated_hours"),
-                    assignee_id=arguments.get("assignee_id"),
-                ))
-
-            elif name == "ora_delete_task":
-                result = _result(task_tools.delete_task(arguments["task_id"]))
-
-            elif name == "ora_create_project":
-                result = _result(task_tools.create_project(
-                    arguments["initiative_id"], ws_id, arguments["name"],
-                    arguments.get("project_type", "build"),
-                    arguments.get("mission", ""),
-                ))
-
-            elif name == "ora_get_workspace_summary":
-                result = _result(task_tools.get_workspace_summary(ws_id))
-
-            elif name == "ora_analyze_progress":
-                result = _result(task_tools.analyze_workspace_progress(ws_id))
-
-            elif name == "ora_list_workspace_members":
-                result = _result(task_tools.list_workspace_members(ws_id))
-
-            elif name == "ora_list_modules":
-                result = _result(module_tools.list_modules(category=arguments.get("category")))
-
-            elif name == "ora_generate_module":
-                goal = arguments["goal"]
-                draft = module_tools.create_module_draft(
-                    title=arguments.get("title") or goal[:80],
-                    description=goal,
-                    category=arguments.get("category", "general"),
-                    difficulty=arguments.get("difficulty", "intermediate"),
-                    author_id=_config["user_id"],
-                )
-                if draft["success"]:
-                    module_tools.start_generation(
-                        _flask_app,
-                        module_template_id=draft["data"]["moduleTemplateId"],
-                        module_template_version_id=draft["data"]["moduleTemplateVersionId"],
-                        goal=goal,
-                        category=arguments.get("category", "general"),
-                        difficulty=arguments.get("difficulty", "intermediate"),
-                    )
-                result = _result(draft)
-
-            elif name == "ora_get_module_progress":
-                result = _result(module_tools.get_generation_progress_by_template(arguments["module_template_id"]))
-
-            elif name == "ora_install_module":
-                result = _result(module_tools.install_module(
-                    arguments["module_template_id"], ws_id, _config["user_id"],
-                ))
-
-            elif name == "ora_list_events":
-                result = _result(calendar_tools.list_events(
-                    ws_id, _config["user_id"],
-                    datetime.fromisoformat(arguments["start"]),
-                    datetime.fromisoformat(arguments["end"]),
-                    scope=arguments.get("scope"),
-                ))
-
-            elif name == "ora_create_event":
-                result = _result(calendar_tools.create_event(
-                    ws_id, _config["user_id"], arguments["title"],
-                    datetime.fromisoformat(arguments["start"]),
-                    datetime.fromisoformat(arguments["end"]),
-                    event_type=arguments.get("type", "personal"),
-                    scope=arguments.get("scope", "personal"),
-                    task_id=arguments.get("task_id"),
-                    color=arguments.get("color", "blue"),
-                    timezone=arguments.get("timezone", "UTC"),
-                    recurrence_rule=arguments.get("recurrence_rule"),
-                    attendees=arguments.get("attendees"),
-                ))
-
-            elif name == "ora_update_event":
-                result = _result(calendar_tools.update_event(
-                    arguments["event_id"],
-                    title=arguments.get("title"),
-                    start=datetime.fromisoformat(arguments["start"]) if arguments.get("start") else None,
-                    end=datetime.fromisoformat(arguments["end"]) if arguments.get("end") else None,
-                    color=arguments.get("color"),
-                    scope=arguments.get("scope"),
-                ))
-
-            elif name == "ora_delete_event":
-                result = _result(calendar_tools.delete_event(
-                    arguments["event_id"], delete_series=arguments.get("delete_series", False),
-                ))
-
-            elif name == "ora_find_availability":
-                result = _result(calendar_tools.find_availability(
-                    ws_id,
-                    arguments.get("attendee_user_ids") or [_config["user_id"]],
-                    arguments["duration_minutes"],
-                    datetime.fromisoformat(arguments["window_start"]),
-                    datetime.fromisoformat(arguments["window_end"]),
-                    day_start_hour=arguments.get("day_start_hour", 9),
-                    day_end_hour=arguments.get("day_end_hour", 18),
-                ))
-
-            elif name == "ora_auto_schedule_tasks":
-                result = _result(calendar_tools.auto_schedule_tasks(
-                    ws_id, _config["user_id"],
-                    task_ids=arguments.get("task_ids"),
-                    day_start_hour=arguments.get("day_start_hour", 9),
-                    day_end_hour=arguments.get("day_end_hour", 18),
-                    weekdays_only=arguments.get("weekdays_only", True),
-                    window_end=arguments.get("target_end_date"),
-                    block_hours=arguments.get("block_hours"),
-                ))
-
-            elif name == "ora_schedule_module_milestones":
-                result = _result(calendar_tools.schedule_module_milestones(
-                    arguments["module_instance_id"], ws_id, _config["user_id"],
-                    block_hours=arguments.get("block_hours", 2.0),
-                ))
-
-            elif name == "ora_create_milestone":
-                result = _result(task_tools.create_milestone(
-                    arguments["project_id"], arguments["title"],
-                    arguments.get("description", ""), arguments.get("due_date"),
-                    arguments.get("order", 0),
-                ))
-
-            elif name == "ora_list_milestones":
-                result = _result(task_tools.list_milestones(arguments["project_id"]))
-
-            elif name == "ora_update_milestone":
-                result = _result(task_tools.update_milestone(
-                    arguments["milestone_id"],
-                    title=arguments.get("title"),
-                    description=arguments.get("description"),
-                    due_date=arguments.get("due_date"),
-                    status=arguments.get("status"),
-                    order=arguments.get("order"),
-                ))
-
-            elif name == "ora_delete_milestone":
-                result = _result(task_tools.delete_milestone(arguments["milestone_id"]))
-
-            elif name == "ora_create_sprint":
-                result = _result(task_tools.create_sprint(
-                    arguments["project_id"], arguments["name"],
-                    arguments.get("start_date"), arguments.get("end_date"),
-                    arguments.get("status", "planned"),
-                ))
-
-            elif name == "ora_list_sprints":
-                result = _result(task_tools.list_sprints(arguments["project_id"]))
-
-            elif name == "ora_update_sprint":
-                result = _result(task_tools.update_sprint(
-                    arguments["sprint_id"],
-                    name=arguments.get("name"),
-                    start_date=arguments.get("start_date"),
-                    end_date=arguments.get("end_date"),
-                    status=arguments.get("status"),
-                ))
-
-            elif name == "ora_delete_sprint":
-                result = _result(task_tools.delete_sprint(arguments["sprint_id"]))
-
-            elif name == "ora_add_dependency":
-                result = _result(task_tools.add_task_dependency(
-                    arguments["task_id"], arguments["depends_on_task_id"],
-                    arguments.get("dependency_type", "blocks"),
-                ))
-
-            elif name == "ora_remove_dependency":
-                result = _result(task_tools.remove_task_dependency(arguments["dependency_id"]))
-
-            elif name == "ora_get_blocked_tasks":
-                result = _result(task_tools.get_blocked_tasks(arguments["project_id"]))
-
-            elif name == "ora_replan_project":
-                result = _result(task_tools.replan_project(
-                    arguments["project_id"], ws_id, _config["user_id"], arguments["goal"],
-                ))
-
-            elif name == "ora_chat":
-                result = _run_chat(arguments["message"], arguments.get("session_id"))
-
-            else:
-                result = {"error": f"Unknown tool: {name}"}
+            ctx = _new_context(session_id=arguments.get("session_id") if name == "ora_chat" else None)
+            create_agent_run(ctx)
+            with execution_context(ctx):
+                result = _dispatch_tool(name, arguments, ws_id)
 
         text = json.dumps(result, indent=2, default=str)
         return CallToolResult(content=[TextContent(type="text", text=text)])
@@ -667,31 +478,277 @@ async def call_tool(name: str, arguments: dict) -> CallToolResult:
         )
 
 
+def _dispatch_tool(name: str, arguments: dict, ws_id: str) -> dict:
+    if name == "ora_list_tasks":
+        return _result(task_tools.get_tasks(
+            ws_id,
+            arguments.get("project_id"),
+            arguments.get("status"),
+            arguments.get("priority"),
+        ))
+
+    if name == "ora_create_task":
+        return _result(task_tools.create_task(
+            arguments["project_id"], ws_id, arguments["title"],
+            arguments.get("description", ""),
+            arguments.get("priority", "medium"),
+            arguments.get("estimated_hours", 1.0),
+        ))
+
+    if name == "ora_update_task":
+        return _result(task_tools.update_task(
+            arguments["task_id"],
+            title=arguments.get("title"),
+            description=arguments.get("description"),
+            status=arguments.get("status"),
+            priority=arguments.get("priority"),
+            estimated_hours=arguments.get("estimated_hours"),
+            assignee_id=arguments.get("assignee_id"),
+        ))
+
+    if name == "ora_delete_task":
+        return _result(task_tools.delete_task(arguments["task_id"]))
+
+    if name == "ora_create_project":
+        return _result(task_tools.create_project(
+            arguments["initiative_id"], ws_id, arguments["name"],
+            arguments.get("project_type", "build"),
+            arguments.get("mission", ""),
+        ))
+
+    if name == "ora_get_workspace_summary":
+        return _result(task_tools.get_workspace_summary(ws_id))
+
+    if name == "ora_analyze_progress":
+        return _result(task_tools.analyze_workspace_progress(ws_id))
+
+    if name == "ora_list_workspace_members":
+        return _result(task_tools.list_workspace_members(ws_id))
+
+    if name == "ora_list_modules":
+        return _result(module_tools.list_modules(category=arguments.get("category")))
+
+    if name == "ora_generate_module":
+        goal = arguments["goal"]
+        draft = module_tools.create_module_draft(
+            title=arguments.get("title") or goal[:80],
+            description=goal,
+            category=arguments.get("category", "general"),
+            difficulty=arguments.get("difficulty", "intermediate"),
+            author_id=_config["user_id"],
+        )
+        if draft["success"]:
+            module_tools.start_generation(
+                _flask_app,
+                module_template_id=draft["data"]["moduleTemplateId"],
+                module_template_version_id=draft["data"]["moduleTemplateVersionId"],
+                goal=goal,
+                category=arguments.get("category", "general"),
+                difficulty=arguments.get("difficulty", "intermediate"),
+            )
+        return _result(draft)
+
+    if name == "ora_get_module_progress":
+        return _result(module_tools.get_generation_progress_by_template(arguments["module_template_id"]))
+
+    if name == "ora_install_module":
+        return _result(module_tools.install_module(arguments["module_template_id"], ws_id, _config["user_id"]))
+
+    if name == "ora_list_events":
+        return _result(calendar_tools.list_events(
+            ws_id, _config["user_id"],
+            datetime.fromisoformat(arguments["start"]),
+            datetime.fromisoformat(arguments["end"]),
+            scope=arguments.get("scope"),
+        ))
+
+    if name == "ora_create_event":
+        return _result(calendar_tools.create_event(
+            ws_id, _config["user_id"], arguments["title"],
+            datetime.fromisoformat(arguments["start"]),
+            datetime.fromisoformat(arguments["end"]),
+            event_type=arguments.get("type", "personal"),
+            scope=arguments.get("scope", "personal"),
+            task_id=arguments.get("task_id"),
+            color=arguments.get("color", "blue"),
+            timezone=arguments.get("timezone", "UTC"),
+            recurrence_rule=arguments.get("recurrence_rule"),
+            attendees=arguments.get("attendees"),
+        ))
+
+    if name == "ora_update_event":
+        return _result(calendar_tools.update_event(
+            arguments["event_id"],
+            title=arguments.get("title"),
+            start=datetime.fromisoformat(arguments["start"]) if arguments.get("start") else None,
+            end=datetime.fromisoformat(arguments["end"]) if arguments.get("end") else None,
+            color=arguments.get("color"),
+            scope=arguments.get("scope"),
+        ))
+
+    if name == "ora_delete_event":
+        return _result(calendar_tools.delete_event(arguments["event_id"], delete_series=arguments.get("delete_series", False)))
+
+    if name == "ora_find_availability":
+        return _result(calendar_tools.find_availability(
+            ws_id,
+            arguments.get("attendee_user_ids") or [_config["user_id"]],
+            arguments["duration_minutes"],
+            datetime.fromisoformat(arguments["window_start"]),
+            datetime.fromisoformat(arguments["window_end"]),
+            day_start_hour=arguments.get("day_start_hour", 9),
+            day_end_hour=arguments.get("day_end_hour", 18),
+        ))
+
+    if name == "ora_auto_schedule_tasks":
+        return _result(calendar_tools.auto_schedule_tasks(
+            ws_id, _config["user_id"],
+            task_ids=arguments.get("task_ids"),
+            day_start_hour=arguments.get("day_start_hour", 9),
+            day_end_hour=arguments.get("day_end_hour", 18),
+            weekdays_only=arguments.get("weekdays_only", True),
+            window_end=arguments.get("target_end_date"),
+            block_hours=arguments.get("block_hours"),
+        ))
+
+    if name == "ora_schedule_module_milestones":
+        return _result(calendar_tools.schedule_module_milestones(
+            arguments["module_instance_id"], ws_id, _config["user_id"],
+            block_hours=arguments.get("block_hours", 2.0),
+        ))
+
+    if name == "ora_create_milestone":
+        return _result(task_tools.create_milestone(
+            arguments["project_id"], arguments["title"],
+            arguments.get("description", ""), arguments.get("due_date"),
+            arguments.get("order", 0),
+        ))
+
+    if name == "ora_list_milestones":
+        return _result(task_tools.list_milestones(arguments["project_id"]))
+
+    if name == "ora_update_milestone":
+        return _result(task_tools.update_milestone(
+            arguments["milestone_id"],
+            title=arguments.get("title"),
+            description=arguments.get("description"),
+            due_date=arguments.get("due_date"),
+            status=arguments.get("status"),
+            order=arguments.get("order"),
+        ))
+
+    if name == "ora_delete_milestone":
+        return _result(task_tools.delete_milestone(arguments["milestone_id"]))
+
+    if name == "ora_create_sprint":
+        return _result(task_tools.create_sprint(
+            arguments["project_id"], arguments["name"],
+            arguments.get("start_date"), arguments.get("end_date"),
+            arguments.get("status", "planned"),
+        ))
+
+    if name == "ora_list_sprints":
+        return _result(task_tools.list_sprints(arguments["project_id"]))
+
+    if name == "ora_update_sprint":
+        return _result(task_tools.update_sprint(
+            arguments["sprint_id"],
+            name=arguments.get("name"),
+            start_date=arguments.get("start_date"),
+            end_date=arguments.get("end_date"),
+            status=arguments.get("status"),
+        ))
+
+    if name == "ora_delete_sprint":
+        return _result(task_tools.delete_sprint(arguments["sprint_id"]))
+
+    if name == "ora_add_dependency":
+        return _result(task_tools.add_task_dependency(
+            arguments["task_id"], arguments["depends_on_task_id"],
+            arguments.get("dependency_type", "blocks"),
+        ))
+
+    if name == "ora_remove_dependency":
+        return _result(task_tools.remove_task_dependency(arguments["dependency_id"]))
+
+    if name == "ora_get_blocked_tasks":
+        return _result(task_tools.get_blocked_tasks(arguments["project_id"]))
+
+    if name == "ora_replan_project":
+        return _result(task_tools.replan_project(arguments["project_id"], ws_id, _config["user_id"], arguments["goal"]))
+
+    if name == "ora_chat":
+        return _run_chat(arguments["message"], arguments.get("session_id"))
+
+    return {"error": f"Unknown tool: {name}"}
+
+
 def _run_chat(message: str, session_id: str | None) -> dict:
     """Invoke the LangGraph orchestrator synchronously (MCP's stdio transport has no
     SSE-equivalent streaming, so this blocks for the full response — same non-streaming
     trade-off as the /a2a/tasks/send endpoint)."""
     import uuid as _uuid
     from langchain_core.messages import HumanMessage
-    from app.agents.orchestrator import create_orchestrator
+    from app.agents.models import AgentRun
+
+    engine = os.environ.get("AGENT_ENGINE", "v2")
+    if engine == "v1":
+        from app.agents.orchestrator import create_orchestrator
+    else:
+        from app.agents.graph_v2 import create_orchestrator
 
     thread_id = session_id or f"mcp_{_uuid.uuid4()}"
+    ctx = get_execution_context(required=False)
+    local_context = None
+    if ctx is None:
+        local_context = _new_context(session_id=thread_id)
+        create_agent_run(local_context)
+        ctx_manager = execution_context(local_context)
+        ctx_manager.__enter__()
+        ctx = local_context
+    else:
+        ctx_manager = None
+
     orchestrator = create_orchestrator()
-    state = {
+    base_state = {
         "messages": [HumanMessage(content=message)],
         "workspace_id": _config["workspace_id"],
         "user_id": _config["user_id"],
         "workspace_context": {},
-        "intent": None,
         "planning_phase": None,
         "draft_plan": {},
         "planning_project_id": None,
     }
-    config = {"configurable": {"thread_id": thread_id}}
-    result = orchestrator.invoke(state, config=config)
-    last_msg = result["messages"][-1]
-    response_text = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
-    return {"session_id": thread_id, "response": response_text}
+    if engine == "v1":
+        state = {**base_state, "intent": None}
+        config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 20}
+    else:
+        state = {
+            **base_state,
+            "complexity": None,
+            "goal": None,
+            "plan": [],
+            "working_memory": {},
+            "current_step_index": 0,
+            "replan_count": 0,
+            "next_action": None,
+            "final_answer": None,
+        }
+        config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 50}
+
+    try:
+        result = orchestrator.invoke(state, config=config)
+        last_msg = result["messages"][-1]
+        response_text = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
+        run = db.session.get(AgentRun, ctx.run_id) if ctx and ctx.run_id else None
+        if run and run.status == AgentRunStatus.RUNNING.value:
+            run.status = AgentRunStatus.COMPLETED.value
+            run.completed_at = datetime.utcnow()
+            db.session.commit()
+        return {"session_id": thread_id, "response": response_text}
+    finally:
+        if ctx_manager is not None:
+            ctx_manager.__exit__(None, None, None)
 
 
 async def main():

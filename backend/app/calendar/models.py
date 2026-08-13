@@ -34,3 +34,9 @@ class CalendarEvent(db.Model):
     ), nullable=True)
     # user_id list — who beyond owner_id can see a scope='workspace'/'company' event.
     attendees = db.Column(JSONB, default=list)
+    # Scheduling semantics for Ora's first-party calendar. A task may have many
+    # task_block sessions; completing a session is distinct from completing the task.
+    is_flexible = db.Column(db.Boolean, default=True)
+    locked = db.Column(db.Boolean, default=False)
+    session_status = db.Column(db.String, default='SCHEDULED')  # SCHEDULED|COMPLETED|MISSED|CANCELLED
+    completed_at = db.Column(db.DateTime, nullable=True)

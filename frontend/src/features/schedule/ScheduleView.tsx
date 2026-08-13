@@ -1,26 +1,162 @@
-import React, { useState, useEffect } from 'react';
-import { Company, Project, Task, CalendarEvent } from '../../types';
-import { Calendar, CheckCircle, Clock, MinusCircle, ChevronLeft, ChevronRight, Zap, PlusCircle, LayoutGrid, List, Repeat, X, Sparkles } from 'lucide-react';
-import { createEvent, getEvents, deleteEvent, autoScheduleTasks } from '../../api/calendar';
-import { CreateEventModal, ConfirmDeleteModal } from './CreateEventModal';
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  AlertTriangle,
+  ArrowRight,
+  Calendar,
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  Clock,
+  Flag,
+  LayoutGrid,
+  List,
+  Lock,
+  MinusCircle,
+  MoveRight,
+  PlusCircle,
+  Target,
+  X,
+  Zap,
+} from 'lucide-react';
+import { CalendarEvent, Company, Project, Task } from '../../types';
+import { autoScheduleTasks, createEvent, deleteEvent, getEvents } from '../../api/calendar';
+import { ConfirmDeleteModal, CreateEventModal } from './CreateEventModal';
 
 interface ScheduleViewProps {
   companies: Company[];
   onStartFocus: (task: Task) => void;
 }
 
-const HOURS = Array.from({ length: 13 }, (_, i) => i + 8); // 8 AM to 8 PM
-const DAYS_OF_WEEK = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+type ViewMode = 'day' | 'week' | 'month';
+type EventKind = 'fixed' | 'work' | 'deadline';
+
+const VIEW_OPTIONS: Array<{ id: ViewMode; icon: React.ElementType; label: string }> = [
+  { id: 'day', icon: List, label: 'Day' },
+  { id: 'week', icon: Calendar, label: 'Week' },
+  { id: 'month', icon: LayoutGrid, label: 'Month' },
+];
+
+const HOURS = Array.from({ length: 13 }, (_, i) => i + 8);
+const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+const startOfDay = (date: Date) => {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  return d;
+};
+
+const endOfDay = (date: Date) => {
+  const d = new Date(date);
+  d.setHours(23, 59, 59, 999);
+  return d;
+};
+
+const startOfWeek = (date: Date) => {
+  const d = startOfDay(date);
+  d.setDate(d.getDate() - d.getDay());
+  return d;
+};
+
+const addDays = (date: Date, days: number) => {
+  const d = new Date(date);
+  d.setDate(d.getDate() + days);
+  return d;
+};
+
+const minutesBetween = (start: Date, end: Date) => Math.max(0, Math.round((end.getTime() - start.getTime()) / 60000));
+
+const formatTime = (value: string | Date) => new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+const formatDuration = (minutes: number) => minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h${minutes % 60 ? ` ${minutes % 60}m` : ''}`;
+
+const allProjectTasks = (companies: Company[]): Array<{ task: Task; project: Project; company: Company }> => (
+  companies.flatMap(company => (company.projects || []).flatMap(project => (project.tasks || []).map(task => ({ task, project, company }))))
+);
+
+const eventKind = (event: CalendarEvent): EventKind => {
+  if (event.type === 'reminder') return 'deadline';
+  if (event.type === 'task_block' || event.taskId || event.isFlexible) return 'work';
+  return 'fixed';
+};
+
+const projectForEvent = (event: CalendarEvent, items: Array<{ task: Task; project: Project; company: Company }>) => (
+  event.taskId ? items.find(item => item.task.id === event.taskId)?.project : null
+);
+
+const eventTitle = (event: CalendarEvent) => event.title.replace(/^Focus:\s*/i, '');
+
+const styleForEvent = (event: CalendarEvent) => {
+  const kind = eventKind(event);
+  const missed = event.sessionStatus === 'MISSED';
+  const completed = event.sessionStatus === 'COMPLETED';
+  if (kind === 'deadline') return 'border-l-ora-warning bg-ora-warning-soft text-ora-ink';
+  if (missed) return 'border-l-ora-warning bg-ora-warning-soft text-ora-ink';
+  if (completed) return 'border-l-ora-success bg-ora-success-soft text-ora-secondary opacity-80';
+  if (kind === 'work') return 'border-l-ora-accent bg-ora-accent-soft text-ora-ink';
+  return 'border-l-ora-border-strong bg-ora-surface-subtle text-ora-ink';
+};
+
+const weekRangeLabel = (date: Date) => {
+  const start = startOfWeek(date);
+  const end = addDays(start, 6);
+  return `${start.toLocaleDateString([], { month: 'short', day: 'numeric' })} - ${end.toLocaleDateString([], { month: 'short', day: 'numeric' })}`;
+};
+
+const monthDays = (date: Date) => {
+  const first = new Date(date.getFullYear(), date.getMonth(), 1);
+  const last = new Date(date.getFullYear(), date.getMonth() + 1, 0);
+  const days: Array<Date | null> = [];
+  for (let i = 0; i < first.getDay(); i += 1) days.push(null);
+  for (let day = 1; day <= last.getDate(); day += 1) days.push(new Date(date.getFullYear(), date.getMonth(), day));
+  return days;
+};
+
+const sameDay = (a: Date, b: Date) => a.toDateString() === b.toDateString();
+
+const EventBlock: React.FC<{
+  event: CalendarEvent;
+  projectName?: string;
+  compact?: boolean;
+  onInspect: (event: CalendarEvent) => void;
+}> = ({ event, projectName, compact = false, onInspect }) => {
+  const kind = eventKind(event);
+  const start = new Date(event.start);
+  const end = new Date(event.end);
+  const duration = minutesBetween(start, end);
+  return (
+    <button
+      onClick={(e) => {
+        e.stopPropagation();
+        onInspect(event);
+      }}
+      className={`w-full rounded-lg border-l-4 px-3 py-2 text-left text-xs shadow-sm transition-colors hover:brightness-[0.98] ${styleForEvent(event)}`}>
+      <div className="flex items-start gap-2">
+        {kind === 'fixed' && <Lock size={12} className="mt-0.5 text-ora-tertiary" />}
+        {kind === 'deadline' && <Flag size={12} className="mt-0.5 text-ora-warning" />}
+        {event.sessionStatus === 'COMPLETED' && <CheckCircle2 size={12} className="mt-0.5 text-ora-success" />}
+        {event.sessionStatus === 'MISSED' && <AlertTriangle size={12} className="mt-0.5 text-ora-warning" />}
+        <span className="min-w-0 flex-1">
+          <span className={`block truncate font-semibold ${compact ? 'text-[11px]' : 'text-sm'}`}>{eventTitle(event)}</span>
+          {!compact && (
+            <span className="mt-1 block truncate text-[11px] opacity-75">
+              {projectName || (kind === 'fixed' ? 'Fixed commitment' : 'Ora session')} · {formatTime(start)}-{formatTime(end)} · {formatDuration(duration)}
+            </span>
+          )}
+        </span>
+      </div>
+    </button>
+  );
+};
 
 export const ScheduleView: React.FC<ScheduleViewProps> = ({ companies, onStartFocus }) => {
   const [currentDate, setCurrentDate] = useState(new Date());
-  const [viewMode, setViewMode] = useState<'day' | 'month'>('day');
+  const [viewMode, setViewMode] = useState<ViewMode>('week');
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [loading, setLoading] = useState(false);
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [banner, setBanner] = useState<string | null>(null);
+  const [railOpen, setRailOpen] = useState(true);
+  const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null);
 
-  // Auto-schedule constraints modal
   const [constraintsModalOpen, setConstraintsModalOpen] = useState(false);
   const [instruction, setInstruction] = useState('');
   const [dayStartHour, setDayStartHour] = useState(9);
@@ -28,383 +164,255 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({ companies, onStartFo
   const [weekdaysOnly, setWeekdaysOnly] = useState(true);
   const [targetEndDate, setTargetEndDate] = useState('');
 
-  // Filter state
-  const [selectedScope, setSelectedScope] = useState<'all' | 'personal' | 'workspace' | 'company'>('all');
-
-  // Create-event modal state
   const [createModalStart, setCreateModalStart] = useState<Date | null>(null);
-
-  // Delete-confirmation modal state
   const [pendingDelete, setPendingDelete] = useState<CalendarEvent | null>(null);
 
-  // Derive consolidated task list
-  const allTasks: { task: Task; project: Project; company: Company }[] = [];
-  companies.forEach(c => {
-    c.projects.forEach(p => {
-      p.tasks?.forEach(t => {
-        allTasks.push({ task: t, project: p, company: c });
-      });
-    });
-  });
+  const items = useMemo(() => allProjectTasks(companies), [companies]);
+  const workspaceId = companies[0]?.workspaceId;
+  const unfinished = items.filter(item => item.task.status !== 'done');
+  const unscheduledTasks = unfinished.filter(item => !events.some(event => event.taskId === item.task.id));
 
-  const unscheduledTasks = allTasks.filter(t => !events.some(e => e.taskId === t.task.id));
-
-  const filteredEvents = selectedScope === 'all'
-    ? events
-    : events.filter(e => e.scope === selectedScope);
+  const visibleRange = useMemo(() => {
+    if (viewMode === 'day') return { start: startOfDay(currentDate), end: endOfDay(currentDate) };
+    if (viewMode === 'week') {
+      const start = startOfWeek(currentDate);
+      return { start, end: endOfDay(addDays(start, 6)) };
+    }
+    return {
+      start: new Date(currentDate.getFullYear(), currentDate.getMonth(), 1),
+      end: new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0, 23, 59, 59),
+    };
+  }, [currentDate, viewMode]);
 
   const loadEvents = async () => {
-    const wsId = companies[0]?.workspaceId;
-    if (!wsId) return;
+    if (!workspaceId) return;
     setLoading(true);
-
     try {
-        let start = new Date(currentDate);
-        let end = new Date(currentDate);
-
-        if (viewMode === 'day') {
-            start.setHours(0,0,0,0);
-            end.setHours(23,59,59,999);
-        } else {
-            // Month View: Get first day of month to last day of month
-            start = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
-            end = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0, 23, 59, 59);
-        }
-
-        const data = await getEvents(wsId, start, end);
-        setEvents(data);
+      setEvents(await getEvents(workspaceId, visibleRange.start, visibleRange.end));
     } catch (e) {
-        console.error("Failed to load events", e);
+      console.error('Failed to load events', e);
     } finally {
-        setLoading(false);
+      setLoading(false);
     }
-  };
-
-  const handleOpenCreateEvent = (hour: number) => {
-      const start = new Date(currentDate);
-      start.setHours(hour, 0, 0, 0);
-      setCreateModalStart(start);
-  };
-
-  const handleSubmitCreateEvent = async (event: Partial<CalendarEvent>) => {
-      const wsId = companies[0]?.workspaceId;
-      if (!wsId) return;
-      await createEvent(wsId, event);
-      loadEvents();
-  };
-  
-  const handleAssignTaskToSlot = async (task: Task, hour: number) => {
-      const wsId = task.workspaceId;
-      const start = new Date(currentDate);
-      start.setHours(hour, 0, 0, 0);
-      const duration = task.estimatedHours || 1;
-      const end = new Date(start);
-      end.setHours(hour + Math.floor(duration), (duration % 1) * 60);
-
-      await createEvent(wsId, {
-          title: `Focus: ${task.title}`,
-          start: start.toISOString(),
-          end: end.toISOString(),
-          type: 'task_block',
-          taskId: task.id,
-          color: 'indigo',
-          scope: 'personal'
-      });
-      loadEvents();
-  };
-
-  const handleConfirmDeleteEvent = async (deleteSeries: boolean) => {
-      if (!pendingDelete) return;
-      await deleteEvent(pendingDelete.id, deleteSeries);
-      loadEvents();
-  };
-
-  const handleAutoSchedule = async () => {
-      const wsId = companies[0]?.workspaceId;
-      if (!wsId) return;
-
-      setIsOptimizing(true);
-      try {
-          const trimmedInstruction = instruction.trim();
-          const result = await autoScheduleTasks(wsId, trimmedInstruction
-              ? { instruction: trimmedInstruction }
-              : {
-                  dayStartHour, dayEndHour, weekdaysOnly,
-                  targetEndDate: targetEndDate ? new Date(targetEndDate).toISOString() : undefined,
-                }
-          );
-          setConstraintsModalOpen(false);
-          setInstruction('');
-
-          if (result.scheduledCount > 0) {
-              const unscheduledNote = result.unscheduledCount > 0
-                  ? ` (${result.unscheduledCount} couldn't find a free slot in the window)`
-                  : '';
-              setBanner(`Scheduled ${result.scheduledCount} task${result.scheduledCount === 1 ? '' : 's'}.${unscheduledNote}`);
-              loadEvents();
-          } else if (result.unscheduledCount > 0) {
-              setBanner("Found tasks to schedule, but no free slots in the given window/hours. Try widening the hours or target date.");
-          } else {
-              setBanner("No open tasks to schedule — everything is either done or already on the calendar.");
-          }
-      } catch (e) {
-          console.error("Auto-schedule failed", e);
-          setBanner("Auto-scheduling failed. Please try again.");
-      } finally {
-          setIsOptimizing(false);
-      }
-  };
-
-  useEffect(() => {
-      if (!banner) return;
-      const t = setTimeout(() => setBanner(null), 4000);
-      return () => clearTimeout(t);
-  }, [banner]);
-
-  const nextDay = () => {
-      const d = new Date(currentDate);
-      if (viewMode === 'day') d.setDate(d.getDate() + 1);
-      else d.setMonth(d.getMonth() + 1);
-      setCurrentDate(d);
-  };
-
-  const prevDay = () => {
-      const d = new Date(currentDate);
-      if (viewMode === 'day') d.setDate(d.getDate() - 1);
-      else d.setMonth(d.getMonth() - 1);
-      setCurrentDate(d);
-  };
-
-  // Month View Helpers
-  const getDaysInMonth = () => {
-      const year = currentDate.getFullYear();
-      const month = currentDate.getMonth();
-      const firstDay = new Date(year, month, 1);
-      const lastDay = new Date(year, month + 1, 0);
-      const days = [];
-      
-      // Padding for start of week
-      for (let i = 0; i < firstDay.getDay(); i++) {
-          days.push(null);
-      }
-      
-      for (let i = 1; i <= lastDay.getDate(); i++) {
-          days.push(new Date(year, month, i));
-      }
-      return days;
   };
 
   useEffect(() => {
     loadEvents();
-  }, [currentDate, viewMode]);
+  }, [workspaceId, visibleRange.start.getTime(), visibleRange.end.getTime()]);
+
+  useEffect(() => {
+    if (!banner) return;
+    const timer = setTimeout(() => setBanner(null), 4200);
+    return () => clearTimeout(timer);
+  }, [banner]);
+
+  const weekDays = Array.from({ length: 7 }, (_, i) => addDays(startOfWeek(currentDate), i));
+  const workMinutes = events
+    .filter(event => eventKind(event) === 'work')
+    .reduce((sum, event) => sum + minutesBetween(new Date(event.start), new Date(event.end)), 0);
+  const fixedMinutes = events
+    .filter(event => eventKind(event) === 'fixed')
+    .reduce((sum, event) => sum + minutesBetween(new Date(event.start), new Date(event.end)), 0);
+  const unscheduledMinutes = unscheduledTasks.reduce((sum, item) => sum + Math.round((item.task.estimatedHours || 1) * 60), 0);
+  const availableEstimate = Math.max(0, (dayEndHour - dayStartHour) * 60 * (weekdaysOnly ? 5 : 7) - workMinutes - fixedMinutes);
+  const overCapacity = unscheduledMinutes > availableEstimate;
+
+  const handleNavigate = (direction: -1 | 1) => {
+    const next = new Date(currentDate);
+    if (viewMode === 'day') next.setDate(next.getDate() + direction);
+    if (viewMode === 'week') next.setDate(next.getDate() + direction * 7);
+    if (viewMode === 'month') next.setMonth(next.getMonth() + direction);
+    setCurrentDate(next);
+  };
+
+  const handleOpenCreateEvent = (date: Date, hour = dayStartHour) => {
+    const start = new Date(date);
+    start.setHours(hour, 0, 0, 0);
+    setCreateModalStart(start);
+  };
+
+  const handleSubmitCreateEvent = async (event: Partial<CalendarEvent>) => {
+    if (!workspaceId) return;
+    await createEvent(workspaceId, event);
+    loadEvents();
+  };
+
+  const handleAssignTaskToSlot = async (task: Task, date = currentDate, hour = dayStartHour) => {
+    const start = new Date(date);
+    start.setHours(hour, 0, 0, 0);
+    const duration = task.estimatedHours || 1;
+    const end = new Date(start.getTime() + duration * 60 * 60 * 1000);
+    await createEvent(task.workspaceId, {
+      title: task.title,
+      start: start.toISOString(),
+      end: end.toISOString(),
+      type: 'task_block',
+      taskId: task.id,
+      color: 'accent',
+      scope: 'personal',
+      isFlexible: true,
+      sessionStatus: 'SCHEDULED',
+    });
+    loadEvents();
+  };
+
+  const handleConfirmDeleteEvent = async (deleteSeries: boolean) => {
+    if (!pendingDelete) return;
+    await deleteEvent(pendingDelete.id, deleteSeries);
+    setPendingDelete(null);
+    setSelectedEvent(null);
+    loadEvents();
+  };
+
+  const handleAutoSchedule = async () => {
+    if (!workspaceId) return;
+    setIsOptimizing(true);
+    try {
+      const trimmedInstruction = instruction.trim();
+      const result = await autoScheduleTasks(workspaceId, trimmedInstruction
+        ? { instruction: trimmedInstruction }
+        : {
+          dayStartHour,
+          dayEndHour,
+          weekdaysOnly,
+          targetEndDate: targetEndDate ? new Date(targetEndDate).toISOString() : undefined,
+        });
+      setConstraintsModalOpen(false);
+      setInstruction('');
+      if (result.scheduledCount > 0) {
+        const skipped = result.unscheduledCount > 0 ? ` ${result.unscheduledCount} still needs time.` : '';
+        setBanner(`Scheduled ${result.scheduledCount} session${result.scheduledCount === 1 ? '' : 's'}.${skipped}`);
+        loadEvents();
+      } else if (result.unscheduledCount > 0) {
+        setBanner('There is not enough available time for the remaining work.');
+      } else {
+        setBanner('No open work needs scheduling.');
+      }
+    } catch (e) {
+      console.error('Auto-schedule failed', e);
+      setBanner('Scheduling failed. Please try again.');
+    } finally {
+      setIsOptimizing(false);
+    }
+  };
+
+  const headerLabel = viewMode === 'month'
+    ? currentDate.toLocaleDateString([], { month: 'long', year: 'numeric' })
+    : viewMode === 'week'
+      ? weekRangeLabel(currentDate)
+      : currentDate.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' });
 
   return (
-    <div className="h-full flex flex-col gap-6">
-      {/* Header */}
-      <div className="flex items-center justify-between bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-        <div>
-          <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
-            <Calendar className="text-indigo-600" /> Resource Allocation
-          </h2>
-          <p className="text-slate-500 text-sm mt-1">Design your day. Block time for what matters.</p>
-        </div>
-        
-        <div className="flex items-center gap-4">
-             {/* View Toggle */}
-             <div className="flex bg-slate-100 p-1 rounded-lg">
-                <button 
-                    onClick={() => setViewMode('day')}
-                    className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all flex items-center gap-2 ${viewMode === 'day' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                >
-                    <List size={14} /> Day
-                </button>
-                <button 
-                    onClick={() => setViewMode('month')}
-                    className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all flex items-center gap-2 ${viewMode === 'month' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                >
-                    <LayoutGrid size={14} /> Month
-                </button>
-             </div>
-
-             {/* Date Nav */}
-             <div className="flex items-center gap-2 bg-slate-100 rounded-lg p-1">
-                 <button onClick={prevDay} className="p-1 hover:bg-white rounded shadow-sm transition-all"><ChevronLeft size={16}/></button>
-                 <span className="w-32 text-center font-bold text-slate-700 text-sm">
-                     {viewMode === 'day' 
-                        ? currentDate.toLocaleDateString(undefined, { weekday: 'short', month: 'long', day: 'numeric' })
-                        : currentDate.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })
-                     }
-                 </span>
-                 <button onClick={nextDay} className="p-1 hover:bg-white rounded shadow-sm transition-all"><ChevronRight size={16}/></button>
-             </div>
-
-             <button
-                onClick={() => setConstraintsModalOpen(true)}
-                disabled={isOptimizing}
-                className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-violet-600 to-indigo-600 text-white rounded-lg hover:shadow-lg hover:shadow-indigo-200 transition-all font-medium text-sm disabled:opacity-70"
-             >
-                <Zap size={16} className={isOptimizing ? "animate-pulse" : ""} />
-                {isOptimizing ? "Scheduling..." : "AI Auto-Schedule"}
-             </button>
-        </div>
-      </div>
-
-      {banner && (
-          <div className="bg-slate-800 text-white text-sm rounded-xl p-3 text-center">{banner}</div>
-      )}
-
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 flex-1 overflow-hidden">
-        {/* Left: Unscheduled Tasks (Repository) */}
-        <div className="bg-white rounded-xl border border-slate-200 flex flex-col h-full overflow-hidden">
-           <div className="p-4 border-b border-slate-100 bg-slate-50">
-              <h3 className="font-bold text-slate-700 flex items-center gap-2">
-                  <CheckCircle size={16} className="text-slate-400"/> Task Repository
-              </h3>
-              <p className="text-xs text-slate-400 mt-1">Drag (or click) to schedule</p>
-           </div>
-           <div className="flex-1 overflow-y-auto p-3 space-y-3 custom-scrollbar">
-               {unscheduledTasks.length === 0 && <div className="text-center py-10 text-slate-400 text-sm italic">All tasks scheduled!</div>}
-               {unscheduledTasks.map(({ task, company }) => (
-                   <div key={task.id} className="p-3 border border-slate-100 rounded-lg hover:border-indigo-200 hover:shadow-sm transition-all bg-white group relative">
-                       <div className="flex justify-between items-start">
-                           <div>
-                                <span className={`text-[10px] uppercase font-bold text-${company.color}-600`}>{company.name}</span>
-                                <p className="text-sm font-medium text-slate-800 line-clamp-2">{task.title}</p>
-                                <span className="text-xs text-slate-400 flex items-center gap-1 mt-1"><Clock size={10}/> {task.estimatedHours || 1}h</span>
-                           </div>
-                           <div className="opacity-0 group-hover:opacity-100 transition-opacity absolute right-2 top-2 bg-white shadow-md p-1 rounded border border-slate-100 flex flex-col gap-1 z-10">
-                               <button onClick={() => handleAssignTaskToSlot(task, 9)} className="text-xs text-indigo-600 hover:bg-indigo-50 p-1 rounded whitespace-nowrap">Schedule @ 9am</button>
-                               <button onClick={() => handleAssignTaskToSlot(task, 13)} className="text-xs text-indigo-600 hover:bg-indigo-50 p-1 rounded whitespace-nowrap">Schedule @ 1pm</button>
-                           </div>
-                       </div>
-                   </div>
-               ))}
-           </div>
-        </div>
-
-        {/* Right: Time Grid (Calendar) */}
-        <div className="lg:col-span-3 bg-white rounded-xl border border-slate-200 flex flex-col h-full overflow-hidden relative">
-            {viewMode === 'day' ? (
-                <div className="flex-1 overflow-y-auto custom-scrollbar relative">
-                    {/* Grid Lines */}
-                    {HOURS.map(hour => (
-                        <div key={hour} className="flex min-h-[80px] border-b border-slate-100 relative group">
-                            {/* Time Label */}
-                            <div className="w-16 flex-shrink-0 border-r border-slate-100 p-2 text-xs text-slate-400 font-medium text-right pr-3">
-                                {hour > 12 ? `${hour - 12} PM` : hour === 12 ? '12 PM' : `${hour} AM`}
-                            </div>
-                            
-                            {/* Droppable Area (Click to add) */}
-                            <div
-                                className="flex-1 hover:bg-slate-50 transition-colors relative cursor-pointer"
-                                onClick={() => handleOpenCreateEvent(hour)}
-                            >
-                                <div className="absolute inset-0 opacity-0 group-hover:opacity-100 flex items-center justify-center pointer-events-none">
-                                    <span className="text-slate-300 text-sm flex items-center gap-1"><PlusCircle size={16}/> Add Event</span>
-                                </div>
-                            </div>
-                        </div>
-                    ))}
-                    
-                    {/* Events Overlay */}
-                    {/* We map events to absolute positions. For simplicity in this v1, we just render them IN the slot if they match the hour exactly, 
-                        OR we can use absolute positioning logic. Let's use absolute positioning based on start time relative to 8 AM. */}
-                    {filteredEvents.map(event => {
-                        const start = new Date(event.start);
-                        const end = new Date(event.end);
-                        
-                        const startHour = start.getHours() + (start.getMinutes() / 60);
-                        const endHour = end.getHours() + (end.getMinutes() / 60);
-                        
-                        // Filter out events not in view (8am - 8pm)
-                        if (startHour < 8 || startHour >= 21) return null;
-                        
-                        const top = (startHour - 8) * 80; // 80px per hour
-                        const height = (endHour - startHour) * 80;
-                        
-                        return (
-                            <div 
-                                key={event.id}
-                                className={`absolute left-16 right-4 rounded-md border-l-4 shadow-sm p-2 text-xs cursor-pointer hover:brightness-95 transition-all overflow-hidden z-10
-                                    ${event.type === 'task_block' ? 'bg-indigo-50 border-indigo-500 text-indigo-900' : 'bg-emerald-50 border-emerald-500 text-emerald-900'}
-                                `}
-                                style={{ top: `${top}px`, height: `${height}px` }}
-                                onClick={(e) => { e.stopPropagation(); }}
-                            >
-                                <div className="flex justify-between items-start">
-                                    <div>
-                                        <strong className="flex items-center gap-1 truncate">
-                                            {event.title}
-                                            {event.recurrenceRule && <Repeat size={10} className="opacity-60 flex-shrink-0" />}
-                                        </strong>
-                                        <span className="opacity-75">{start.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} - {end.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
-                                    </div>
-                                    <button onClick={() => setPendingDelete(event)} className="text-slate-400 hover:text-red-500"><MinusCircle size={14}/></button>
-                                </div>
-                            </div>
-                        );
-                    })}
-                </div>
-            ) : (
-                <div className="flex-1 flex flex-col">
-                    {/* Days Header */}
-                    <div className="grid grid-cols-7 border-b border-slate-200">
-                        {DAYS_OF_WEEK.map(d => (
-                            <div key={d} className="p-2 text-center text-xs font-bold text-slate-500 uppercase">{d}</div>
-                        ))}
-                    </div>
-                    {/* Month Grid */}
-                    <div className="flex-1 grid grid-cols-7 auto-rows-fr">
-                        {getDaysInMonth().map((d, i) => {
-                            if (!d) return <div key={i} className="bg-slate-50/50 border-b border-r border-slate-100"></div>;
-                            
-                            const dayEvents = filteredEvents.filter(e => {
-                                const eDate = new Date(e.start);
-                                return eDate.getDate() === d.getDate() && 
-                                       eDate.getMonth() === d.getMonth() && 
-                                       eDate.getFullYear() === d.getFullYear();
-                            });
-
-                            const isToday = d.toDateString() === new Date().toDateString();
-
-                            return (
-                                <div key={i} className={`border-b border-r border-slate-100 p-2 min-h-[100px] flex flex-col gap-1 hover:bg-slate-50 transition-colors ${isToday ? 'bg-indigo-50/30' : ''}`}>
-                                    <span className={`text-xs font-medium mb-1 w-6 h-6 flex items-center justify-center rounded-full ${isToday ? 'bg-indigo-600 text-white' : 'text-slate-500'}`}>
-                                        {d.getDate()}
-                                    </span>
-                                    {dayEvents.slice(0, 3).map(e => (
-                                        <div key={e.id} className={`text-[10px] px-1.5 py-0.5 rounded truncate border-l-2 ${
-                                            e.type === 'task_block' 
-                                                ? 'bg-indigo-50 border-indigo-500 text-indigo-700' 
-                                                : 'bg-emerald-50 border-emerald-500 text-emerald-700'
-                                        }`}>
-                                            {e.title}
-                                        </div>
-                                    ))}
-                                    {dayEvents.length > 3 && (
-                                        <div className="text-[10px] text-slate-400 pl-1">
-                                            + {dayEvents.length - 3} more
-                                        </div>
-                                    )}
-                                </div>
-                            );
-                        })}
-                    </div>
-                </div>
-            )}
-            
-            {/* Legend / Scopes */}
-            <div className="p-3 border-t border-slate-200 bg-slate-50 flex items-center gap-4 text-xs font-medium text-slate-600">
-                <div className="flex items-center gap-1"><div className="w-3 h-3 bg-indigo-50 border border-indigo-500 rounded sm"></div> Task</div>
-                <div className="flex items-center gap-1"><div className="w-3 h-3 bg-emerald-50 border border-emerald-500 rounded sm"></div> Meeting</div>
-                <div className="flex-1"></div>
-                <span className="text-slate-400">Scopes:</span>
-                <button onClick={() => setSelectedScope('all')} className={`${selectedScope === 'all' ? 'text-indigo-600 font-bold' : ''}`}>All</button>
-                <button onClick={() => setSelectedScope('personal')} className={`${selectedScope === 'personal' ? 'text-indigo-600 font-bold' : ''}`}>Personal</button>
-                <button onClick={() => setSelectedScope('workspace')} className={`${selectedScope === 'workspace' ? 'text-indigo-600 font-bold' : ''}`}>Workspace</button>
-                <button onClick={() => setSelectedScope('company')} className={`${selectedScope === 'company' ? 'text-indigo-600 font-bold' : ''}`}>Company</button>
+    <div className="flex h-full flex-col gap-6 text-ora-ink">
+      <header className="space-y-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <p className="text-sm font-medium text-ora-secondary">Calendar</p>
+            <h1 className="mt-1 text-3xl font-semibold tracking-tight">Time execution</h1>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-ora-secondary">Fixed commitments, flexible Ora sessions, deadlines, and unscheduled work in one view.</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button onClick={() => setCurrentDate(new Date())} className="rounded-lg px-3 py-2 text-sm font-medium text-ora-secondary hover:bg-ora-surface">Today</button>
+            <div className="flex items-center rounded-lg border border-ora-border bg-ora-surface p-1 shadow-sm">
+              <button onClick={() => handleNavigate(-1)} className="rounded-md p-2 hover:bg-ora-subtle" aria-label="Previous"><ChevronLeft size={16} /></button>
+              <span className="min-w-36 px-2 text-center text-sm font-semibold">{headerLabel}</span>
+              <button onClick={() => handleNavigate(1)} className="rounded-md p-2 hover:bg-ora-subtle" aria-label="Next"><ChevronRight size={16} /></button>
             </div>
+            <div className="flex rounded-lg border border-ora-border bg-ora-surface p-1 shadow-sm">
+              {VIEW_OPTIONS.map(({ id, icon: ViewIcon, label }) => {
+                return (
+                  <button
+                    key={id}
+                    onClick={() => setViewMode(id)}
+                    className={`inline-flex items-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium ${viewMode === id ? 'bg-ora-accent-soft text-ora-accent' : 'text-ora-secondary hover:bg-ora-subtle'}`}>
+                    <ViewIcon size={14} /> {label}
+                  </button>
+                );
+              })}
+            </div>
+            <button
+              onClick={() => setConstraintsModalOpen(true)}
+              disabled={isOptimizing}
+              className="inline-flex items-center gap-2 rounded-lg bg-ora-accent px-4 py-2 text-sm font-medium text-white hover:bg-ora-accent-hover disabled:opacity-70">
+              <Zap size={15} /> {isOptimizing ? 'Scheduling...' : 'Plan my week'}
+            </button>
+          </div>
         </div>
+
+        <div className="flex flex-wrap items-center gap-x-8 gap-y-2 text-sm text-ora-secondary">
+          <span><strong className="text-ora-ink">{formatDuration(workMinutes)}</strong> scheduled work</span>
+          <span><strong className="text-ora-ink">{formatDuration(Math.max(0, availableEstimate))}</strong> estimated free focus</span>
+          <span><strong className={overCapacity ? 'text-ora-warning' : 'text-ora-success'}>{overCapacity ? formatDuration(unscheduledMinutes - availableEstimate) : 'Clear'}</strong> capacity risk</span>
+          {loading && <span>Loading...</span>}
+        </div>
+        {banner && <div className="rounded-xl bg-ora-ink px-4 py-3 text-center text-sm text-white">{banner}</div>}
+        {overCapacity && (
+          <div className="flex items-start gap-3 rounded-lg border border-ora-warning/25 bg-ora-warning-soft px-4 py-3 text-sm text-ora-secondary">
+            <AlertTriangle size={17} className="mt-0.5 text-ora-warning" />
+            <p>This week is over capacity by about {formatDuration(unscheduledMinutes - availableEstimate)}. Ora can rebalance without moving fixed commitments.</p>
+          </div>
+        )}
+      </header>
+
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+        <main className="min-h-0 overflow-hidden rounded-lg border border-ora-border bg-ora-surface shadow-sm">
+          {viewMode === 'month' ? (
+            <MonthView
+              currentDate={currentDate}
+              events={events}
+              items={items}
+              onInspect={setSelectedEvent}
+            />
+          ) : (
+            <>
+              <WeekGrid
+                days={viewMode === 'day' ? [currentDate] : weekDays}
+                events={events}
+                items={items}
+                onInspect={setSelectedEvent}
+                onCreate={handleOpenCreateEvent}
+              />
+              <AgendaView
+                days={viewMode === 'day' ? [currentDate] : weekDays}
+                events={events}
+                items={items}
+                onInspect={setSelectedEvent}
+              />
+            </>
+          )}
+        </main>
+
+        <aside className={`${railOpen ? 'block' : 'hidden lg:block'} min-h-0 rounded-lg border border-ora-border bg-ora-surface-subtle`}>
+          <div className="flex items-center justify-between px-5 py-4">
+            <div>
+              <h2 className="text-sm font-semibold">Unscheduled</h2>
+              <p className="text-xs text-ora-secondary">{formatDuration(unscheduledMinutes)} still needs time</p>
+            </div>
+            <button onClick={() => setRailOpen(value => !value)} className="rounded-lg p-2 text-ora-secondary hover:bg-ora-subtle lg:hidden">
+              <X size={16} />
+            </button>
+          </div>
+          <div className="max-h-[calc(100vh-260px)] space-y-2 overflow-y-auto px-3 pb-4">
+            {unscheduledTasks.slice(0, 8).map(({ task, project }) => (
+              <div key={task.id} className="rounded-xl px-3 py-3 hover:bg-ora-subtle">
+                <p className="text-sm font-semibold">{task.title}</p>
+                <p className="mt-1 text-xs text-ora-secondary">{project.name} · {formatDuration(Math.round((task.estimatedHours || 1) * 60))}</p>
+                <div className="mt-3 flex gap-2">
+                  <button onClick={() => onStartFocus(task)} className="rounded-md px-2 py-1 text-xs font-medium text-ora-secondary hover:bg-ora-surface">Start</button>
+                  <button onClick={() => handleAssignTaskToSlot(task, currentDate, dayStartHour)} className="rounded-md bg-ora-accent-soft px-2 py-1 text-xs font-medium text-ora-accent">Schedule</button>
+                </div>
+              </div>
+            ))}
+            {unscheduledTasks.length === 0 && <p className="px-3 py-8 text-center text-sm text-ora-secondary">Everything currently actionable has time.</p>}
+          </div>
+          {unscheduledTasks.length > 0 && (
+            <div className="border-t border-ora-border px-5 py-4">
+              <button onClick={() => setConstraintsModalOpen(true)} className="flex w-full items-center justify-center gap-2 rounded-lg bg-ora-accent px-3 py-2 text-sm font-medium text-white hover:bg-ora-accent-hover">
+                Ask Ora to schedule <ArrowRight size={15} />
+              </button>
+            </div>
+          )}
+        </aside>
       </div>
 
       <CreateEventModal
@@ -423,69 +431,206 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({ companies, onStartFo
         onClose={() => setPendingDelete(null)}
       />
 
-      {constraintsModalOpen && (
-        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg p-6">
-            <div className="flex justify-between items-center mb-1">
-              <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Sparkles className="text-indigo-500" size={18}/> AI Auto-Schedule</h3>
-              <button onClick={() => setConstraintsModalOpen(false)} className="text-slate-400 hover:text-slate-600"><X size={20} /></button>
-            </div>
-            <p className="text-slate-500 text-sm mb-4">
-              Places {unscheduledTasks.length} open task{unscheduledTasks.length === 1 ? '' : 's'} into real free slots on your calendar.
-            </p>
+      {selectedEvent && (
+        <SessionInspector
+          event={selectedEvent}
+          project={projectForEvent(selectedEvent, items)}
+          task={selectedEvent.taskId ? items.find(item => item.task.id === selectedEvent.taskId)?.task : undefined}
+          onClose={() => setSelectedEvent(null)}
+          onDelete={() => setPendingDelete(selectedEvent)}
+          onStartFocus={onStartFocus}
+        />
+      )}
 
-            <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Describe constraints (optional)</label>
+      {constraintsModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ora-ink/40 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-ora-ink">Plan time with Ora</h3>
+              <button onClick={() => setConstraintsModalOpen(false)} className="rounded-lg p-2 text-ora-secondary hover:bg-ora-subtle"><X size={20} /></button>
+            </div>
+            <p className="mt-2 text-sm leading-6 text-ora-secondary">Place {unscheduledTasks.length} open item{unscheduledTasks.length === 1 ? '' : 's'} into real free slots while respecting fixed commitments.</p>
+            <label className="mt-5 block text-sm font-medium text-ora-ink">Constraints</label>
             <textarea
               value={instruction}
               onChange={e => setInstruction(e.target.value)}
-              placeholder="e.g. weekdays 9 to 5 only, wrap everything up by March 1st"
-              className="w-full p-3 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-indigo-500 resize-none mb-4"
-              rows={2}
+              placeholder="e.g. no mornings, keep Friday exam fixed, finish by Sunday"
+              className="mt-2 w-full resize-none rounded-xl border border-ora-border px-3 py-3 text-sm outline-none focus:border-ora-accent"
+              rows={3}
             />
-
-            <div className="grid grid-cols-2 gap-3 mb-4">
-              <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Start Hour</label>
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <label className="text-sm text-ora-secondary">
+                Start hour
                 <input type="number" min={0} max={23} value={dayStartHour} onChange={e => setDayStartHour(Number(e.target.value))}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-indigo-500" />
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">End Hour</label>
+                  className="mt-1 w-full rounded-lg border border-ora-border px-3 py-2 text-sm outline-none focus:border-ora-accent" />
+              </label>
+              <label className="text-sm text-ora-secondary">
+                End hour
                 <input type="number" min={0} max={23} value={dayEndHour} onChange={e => setDayEndHour(Number(e.target.value))}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-indigo-500" />
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Target End Date</label>
+                  className="mt-1 w-full rounded-lg border border-ora-border px-3 py-2 text-sm outline-none focus:border-ora-accent" />
+              </label>
+              <label className="text-sm text-ora-secondary">
+                Target end
                 <input type="date" value={targetEndDate} onChange={e => setTargetEndDate(e.target.value)}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-indigo-500" />
-              </div>
-              <div className="flex items-end pb-2">
-                <label className="flex items-center gap-2 text-sm text-slate-700">
-                  <input type="checkbox" checked={weekdaysOnly} onChange={e => setWeekdaysOnly(e.target.checked)} className="rounded border-slate-300" />
-                  Weekdays only
-                </label>
-              </div>
+                  className="mt-1 w-full rounded-lg border border-ora-border px-3 py-2 text-sm outline-none focus:border-ora-accent" />
+              </label>
+              <label className="flex items-end gap-2 pb-2 text-sm text-ora-secondary">
+                <input type="checkbox" checked={weekdaysOnly} onChange={e => setWeekdaysOnly(e.target.checked)} className="rounded border-ora-border" />
+                Weekdays only
+              </label>
             </div>
-
-            <p className="text-[11px] text-slate-400 mb-4">
-              If you describe constraints above, they take priority over the fields below — leave the description blank to use the fields directly.
-            </p>
-
-            <div className="flex justify-end gap-3">
-              <button onClick={() => setConstraintsModalOpen(false)} className="text-slate-500 hover:text-slate-800 font-medium text-sm">Cancel</button>
-              <button
-                onClick={handleAutoSchedule}
-                disabled={isOptimizing}
-                className="bg-indigo-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-indigo-700 flex items-center gap-2 disabled:opacity-50"
-              >
-                <Zap size={16} className={isOptimizing ? "animate-pulse" : ""} />
-                {isOptimizing ? "Scheduling..." : "Schedule"}
+            <div className="mt-6 flex justify-end gap-3">
+              <button onClick={() => setConstraintsModalOpen(false)} className="rounded-lg px-3 py-2 text-sm font-medium text-ora-secondary hover:bg-ora-subtle">Cancel</button>
+              <button onClick={handleAutoSchedule} disabled={isOptimizing} className="rounded-lg bg-ora-accent px-4 py-2 text-sm font-medium text-white hover:bg-ora-accent-hover disabled:opacity-60">
+                {isOptimizing ? 'Scheduling...' : 'Schedule'}
               </button>
             </div>
           </div>
         </div>
       )}
     </div>
-  )
+  );
 };
 
+const WeekGrid: React.FC<{
+  days: Date[];
+  events: CalendarEvent[];
+  items: Array<{ task: Task; project: Project; company: Company }>;
+  onInspect: (event: CalendarEvent) => void;
+  onCreate: (date: Date, hour?: number) => void;
+}> = ({ days, events, items, onInspect, onCreate }) => {
+  const today = new Date();
+  const currentHour = today.getHours() + today.getMinutes() / 60;
+  return (
+    <div className="hidden h-full min-h-[560px] overflow-auto lg:block">
+      <div className="grid min-w-[760px]" style={{ gridTemplateColumns: `72px repeat(${days.length}, minmax(140px, 1fr))` }}>
+        <div className="sticky top-0 z-20 bg-ora-surface" />
+        {days.map(day => (
+          <div key={day.toISOString()} className={`sticky top-0 z-20 border-b border-l border-ora-border px-3 py-3 ${sameDay(day, today) ? 'bg-ora-accent-soft text-ora-accent' : 'bg-ora-surface text-ora-secondary'}`}>
+            <p className="text-xs">{DAY_LABELS[day.getDay()]}</p>
+            <p className="text-lg font-semibold">{day.getDate()}</p>
+          </div>
+        ))}
+        {HOURS.map(hour => (
+          <React.Fragment key={hour}>
+            <div className="border-t border-ora-border px-2 py-2 text-right text-xs text-ora-tertiary">
+              {hour > 12 ? `${hour - 12} PM` : hour === 12 ? '12 PM' : `${hour} AM`}
+            </div>
+            {days.map(day => {
+              const slotEvents = events.filter(event => sameDay(new Date(event.start), day) && new Date(event.start).getHours() === hour);
+              const isToday = sameDay(day, today);
+              const showNow = isToday && currentHour >= hour && currentHour < hour + 1;
+              return (
+                <div key={`${day.toISOString()}-${hour}`} onClick={() => onCreate(day, hour)} className={`relative min-h-[92px] cursor-pointer border-l border-t border-ora-border px-2 py-2 text-left hover:bg-ora-subtle/70 ${isToday ? 'bg-ora-accent-soft/35' : 'bg-ora-surface/55'}`}>
+                  {showNow && <span className="absolute left-0 right-0 top-1/2 h-px bg-ora-danger" />}
+                  <div className="space-y-1">
+                    {slotEvents.map(event => (
+                      <EventBlock
+                        key={event.id}
+                        event={event}
+                        projectName={projectForEvent(event, items)?.name}
+                        onInspect={onInspect}
+                      />
+                    ))}
+                  </div>
+                  {slotEvents.length === 0 && <span className="opacity-0 transition-opacity hover:opacity-100 text-xs text-ora-tertiary"><PlusCircle size={13} className="inline" /> Add</span>}
+                </div>
+              );
+            })}
+          </React.Fragment>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const AgendaView: React.FC<{
+  days: Date[];
+  events: CalendarEvent[];
+  items: Array<{ task: Task; project: Project; company: Company }>;
+  onInspect: (event: CalendarEvent) => void;
+}> = ({ days, events, items, onInspect }) => (
+  <div className="space-y-4 p-4 lg:hidden">
+    {days.map(day => {
+      const dayEvents = events
+        .filter(event => sameDay(new Date(event.start), day))
+        .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+      return (
+        <section key={day.toISOString()} className="space-y-2">
+          <h2 className="text-sm font-semibold text-ora-ink">{sameDay(day, new Date()) ? 'Today' : day.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })}</h2>
+          {dayEvents.map(event => (
+            <EventBlock key={event.id} event={event} projectName={projectForEvent(event, items)?.name} onInspect={onInspect} />
+          ))}
+          {dayEvents.length === 0 && <p className="rounded-lg bg-ora-subtle px-3 py-3 text-sm text-ora-secondary">No committed time.</p>}
+        </section>
+      );
+    })}
+  </div>
+);
+
+const MonthView: React.FC<{
+  currentDate: Date;
+  events: CalendarEvent[];
+  items: Array<{ task: Task; project: Project; company: Company }>;
+  onInspect: (event: CalendarEvent) => void;
+}> = ({ currentDate, events, items, onInspect }) => (
+  <div className="flex h-full min-h-[560px] flex-col">
+    <div className="grid grid-cols-7 border-b border-ora-border bg-ora-surface">
+      {DAY_LABELS.map(day => <div key={day} className="px-3 py-3 text-center text-xs font-medium text-ora-secondary">{day}</div>)}
+    </div>
+    <div className="grid flex-1 grid-cols-7 auto-rows-fr">
+      {monthDays(currentDate).map((day, index) => {
+        if (!day) return <div key={index} className="bg-ora-subtle/70" />;
+        const dayEvents = events.filter(event => sameDay(new Date(event.start), day));
+        return (
+          <div key={day.toISOString()} className={`min-h-[104px] border-b border-r border-ora-border p-2 ${sameDay(day, new Date()) ? 'bg-ora-accent-soft/70' : 'bg-ora-surface/60'}`}>
+            <p className={`mb-2 text-sm font-semibold ${sameDay(day, new Date()) ? 'text-ora-accent' : 'text-ora-secondary'}`}>{day.getDate()}</p>
+            <div className="space-y-1">
+              {dayEvents.slice(0, 3).map(event => (
+                <EventBlock key={event.id} event={event} projectName={projectForEvent(event, items)?.name} compact onInspect={onInspect} />
+              ))}
+              {dayEvents.length > 3 && <p className="pl-1 text-xs text-ora-tertiary">+ {dayEvents.length - 3} more</p>}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  </div>
+);
+
+const SessionInspector: React.FC<{
+  event: CalendarEvent;
+  project?: Project | null;
+  task?: Task;
+  onClose: () => void;
+  onDelete: () => void;
+  onStartFocus: (task: Task) => void;
+}> = ({ event, project, task, onClose, onDelete, onStartFocus }) => {
+  const start = new Date(event.start);
+  const end = new Date(event.end);
+  const kind = eventKind(event);
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end bg-ora-ink/30" onClick={onClose}>
+      <aside className="h-full w-full max-w-sm bg-white p-6 shadow-2xl" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <p className="text-sm text-ora-secondary">{kind === 'work' ? 'Ora session' : kind === 'deadline' ? 'Deadline' : 'Fixed commitment'}</p>
+          <button onClick={onClose} className="rounded-lg p-2 text-ora-secondary hover:bg-ora-subtle"><X size={18} /></button>
+        </div>
+        <h2 className="mt-4 text-2xl font-semibold tracking-tight text-ora-ink">{eventTitle(event)}</h2>
+        <p className="mt-2 text-sm text-ora-secondary">{project?.name || (kind === 'fixed' ? 'Fixed time' : 'Calendar')}</p>
+        <div className="mt-6 space-y-3 text-sm text-ora-secondary">
+          <p className="flex items-center gap-2"><Clock size={15} /> {start.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })} · {formatTime(start)}-{formatTime(end)}</p>
+          {event.locked && <p className="flex items-center gap-2"><Lock size={15} /> Locked. Ora should not move this automatically.</p>}
+          {event.sessionStatus && <p className="flex items-center gap-2"><Target size={15} /> {event.sessionStatus.replace(/_/g, ' ').toLowerCase()}</p>}
+          {event.sessionStatus === 'MISSED' && <p className="rounded-xl bg-ora-warning-soft px-3 py-3 text-ora-secondary">This session was missed. The task itself remains truthful until completed elsewhere.</p>}
+          {event.sessionStatus === 'COMPLETED' && <p className="rounded-xl bg-ora-success-soft px-3 py-3 text-ora-secondary">This session is complete. Multi-session tasks may still need more work.</p>}
+        </div>
+        <div className="mt-8 space-y-2">
+          {task && <button onClick={() => onStartFocus(task)} className="flex w-full items-center justify-center gap-2 rounded-lg bg-ora-accent px-4 py-2 text-sm font-medium text-white hover:bg-ora-accent-hover">Start <ArrowRight size={15} /></button>}
+          <button className="flex w-full items-center justify-center gap-2 rounded-lg bg-ora-subtle px-4 py-2 text-sm font-medium text-ora-ink"><MoveRight size={15} /> Move</button>
+          <button onClick={onDelete} className="flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-ora-danger hover:bg-red-50"><MinusCircle size={15} /> Remove</button>
+        </div>
+      </aside>
+    </div>
+  );
+};

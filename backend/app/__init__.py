@@ -8,6 +8,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from .core.config import Config
 from .core.extensions import db, migrate, jwt, cors
 from .core.logging import configure_logging
+from .core.rate_limit import check_rate_limit
 from .auth.oauth import init_oauth
 
 from .auth.routes import auth_bp
@@ -20,6 +21,7 @@ from .documents.routes import document_bp
 from .calendar.routes import calendar_bp
 from .analytics.routes import analytics_bp
 from .agents.legacy_routes import agent_bp
+from .agents.plan_routes import plan_bp
 from .chat.routes import chat_bp
 from .billing.routes import billing_bp
 from .modules.routes import module_bp
@@ -44,20 +46,34 @@ def create_app(config_class=Config):
     jwt.init_app(app)
     init_oauth(app)
 
-    cors.init_app(app,
+    cors.init_app(
+        app,
         resources={r"/*": {
-            "origins": [
-                "https://ora.teams-lab.com",
-                "https://gen-lang-client-0256042453.web.app",
-                "http://localhost:5173",
-                "http://localhost:3000"
-            ],
+            "origins": app.config["CORS_ALLOWED_ORIGINS"],
             "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
             "allow_headers": ["Content-Type", "Authorization", "X-Requested-With", "Accept", "Origin"],
             "supports_credentials": True,
             "max_age": 3600
         }}
     )
+
+    @app.before_request
+    def enforce_rate_limits():
+        return check_rate_limit()
+
+    @app.after_request
+    def apply_security_headers(response):
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+        )
+        if request.is_secure:
+            response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+        return response
 
     # --- v1 blueprints ---
     app.register_blueprint(auth_bp, url_prefix='/api/v1/auth')
@@ -69,6 +85,7 @@ def create_app(config_class=Config):
     app.register_blueprint(calendar_bp, url_prefix='/api/v1')
     app.register_blueprint(analytics_bp, url_prefix='/api/v1')
     app.register_blueprint(agent_bp, url_prefix='/api/v1/agents')
+    app.register_blueprint(plan_bp, url_prefix='/api/v1')
     app.register_blueprint(chat_bp, url_prefix='/api/v1/chat')
 
     # --- v2 blueprints (enterprise/org surface) ---
@@ -154,6 +171,12 @@ def create_app(config_class=Config):
 
         if not text:
             return jsonify({"error": "No message text provided"}), 400
+        if not workspace_id:
+            return jsonify({"error": "workspace_id is required"}), 400
+
+        from .core.authz import user_can_access_workspace
+        if not user_can_access_workspace(user_id, workspace_id):
+            return jsonify({"error": "Forbidden"}), 403
 
         try:
             from .agents.orchestrator import create_orchestrator
@@ -174,8 +197,9 @@ def create_app(config_class=Config):
             result = orchestrator.invoke(state, config=config)
             last_msg = result["messages"][-1]
             response_text = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
-        except Exception as e:
-            response_text = f"Agent error: {e}"
+        except Exception:
+            app.logger.exception("a2a_task_failed", extra={"task_id": task_id, "workspace_id": workspace_id})
+            return jsonify({"error": "Agent task failed"}), 500
 
         return jsonify({
             "id": task_id,
@@ -225,7 +249,7 @@ def create_app(config_class=Config):
     # Auto-create missing tables for zero-config dev (MVP convenience).
     # Disable via AUTO_CREATE_TABLES=false when schema should come from Alembic
     # migrations only (e.g. generating/testing migrations, or a hardened prod boot).
-    if os.environ.get('AUTO_CREATE_TABLES', 'true').lower() not in ('false', '0'):
+    if app.config.get('AUTO_CREATE_TABLES'):
         with app.app_context():
             db.create_all()
 

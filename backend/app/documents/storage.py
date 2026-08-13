@@ -19,6 +19,7 @@ class StorageNotConfigured(Exception):
 
 
 def _bucket():
+    from google.auth.exceptions import DefaultCredentialsError
     from google.cloud import storage
 
     bucket_name = current_app.config.get('GCS_BUCKET_NAME')
@@ -27,7 +28,14 @@ def _bucket():
             "GCS_BUCKET_NAME is not configured — set it (and GOOGLE_APPLICATION_CREDENTIALS) "
             "to enable Document Vault uploads."
         )
-    client = storage.Client()
+    try:
+        client = storage.Client()
+    except DefaultCredentialsError as e:
+        raise StorageNotConfigured(
+            "GCS_BUCKET_NAME or GCS credentials are not fully configured — set "
+            "GCS_BUCKET_NAME and GOOGLE_APPLICATION_CREDENTIALS or deployment ambient "
+            "credentials to enable Document Vault uploads."
+        ) from e
     return client.bucket(bucket_name)
 
 

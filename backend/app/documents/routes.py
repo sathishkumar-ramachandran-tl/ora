@@ -1,5 +1,6 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, current_app, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
+from werkzeug.utils import secure_filename
 
 from ..core.extensions import db
 from ..core.authz import user_can_access_workspace
@@ -7,6 +8,12 @@ from .models import Document
 from . import storage
 
 document_bp = Blueprint('document', __name__)
+
+
+def _extension(filename: str) -> str:
+    if "." not in filename:
+        return ""
+    return filename.rsplit(".", 1)[1].lower()
 
 
 @document_bp.route('/documents', methods=['POST'])
@@ -22,16 +29,29 @@ def upload_document():
     if not file or not file.filename:
         return jsonify({"error": "file is required"}), 400
 
+    safe_name = secure_filename(file.filename)
+    if not safe_name:
+        return jsonify({"error": "Invalid filename"}), 400
+
+    allowed_extensions = current_app.config.get("DOCUMENT_ALLOWED_EXTENSIONS", set())
+    if allowed_extensions and _extension(safe_name) not in allowed_extensions:
+        return jsonify({"error": "File type is not allowed"}), 400
+
+    max_upload_bytes = current_app.config.get("DOCUMENT_MAX_UPLOAD_BYTES", 10 * 1024 * 1024)
+    if request.content_length and request.content_length > max_upload_bytes:
+        return jsonify({"error": "File is too large"}), 413
+
     tags = request.form.getlist('tags')
+    tags = [tag.strip()[:64] for tag in tags if tag and tag.strip()][:20]
 
     try:
-        bucket_path = storage.upload_file(workspace_id, file.filename, file.stream, content_type=file.mimetype)
+        bucket_path = storage.upload_file(workspace_id, safe_name, file.stream, content_type=file.mimetype)
     except storage.StorageNotConfigured as e:
         return jsonify({"error": str(e)}), 503
 
     doc = Document(
         workspace_id=workspace_id,
-        name=file.filename,
+        name=safe_name,
         size=request.content_length or 0,
         type=file.mimetype,
         bucket_path=bucket_path,

@@ -40,8 +40,8 @@ if _dev_database_url and _dev_database_url.rstrip("/") == TEST_DATABASE_URL.repl
 class TestConfig(Config):
     TESTING = True
     SQLALCHEMY_DATABASE_URI = TEST_DATABASE_URL
-    JWT_SECRET_KEY = "test-jwt-secret"
-    SECRET_KEY = "test-secret"
+    JWT_SECRET_KEY = "test-jwt-secret-with-at-least-thirty-two-bytes"
+    SECRET_KEY = "test-secret-with-at-least-thirty-two-bytes"
 
 
 @pytest.fixture()

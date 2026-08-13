@@ -21,9 +21,15 @@ from .documents.models import Document
 from .calendar.models import CalendarEvent
 from .analytics.models import ActivityLog
 from .chat.models import ChatSession, ChatMessage
-from .agents.models import AgentToolCall, PlanningSession, LlmCall
+from .agents.models import (
+    AgentRun, AgentAction, AgentToolCall, PlanProposal,
+    Concept, ConceptAlias, ConceptRelationship, CoverageRecord,
+    ResearchEvidence, CompetencyEvidence, MasteryRecord, PlanRevisionProposal,
+    ScheduleProposal, PlanningSession, LlmCall,
+)
 from .billing.models import Plan, Subscription, PlanOverride, PromoCode, PromoRedemption, PlatformSetting
 from .modules.models import ModuleTemplate, ModuleTemplateVersion, ModuleInstance
+from .core.models import RateLimitCounter
 
 __all__ = [
     "User", "OAuthAccount", "EmailVerificationToken", "PasswordResetToken",
@@ -36,6 +42,10 @@ __all__ = [
     "CalendarEvent",
     "ActivityLog",
     "ChatSession", "ChatMessage",
-    "AgentToolCall", "PlanningSession", "LlmCall",
+    "AgentRun", "AgentAction", "AgentToolCall", "PlanProposal",
+    "Concept", "ConceptAlias", "ConceptRelationship", "CoverageRecord",
+    "ResearchEvidence", "CompetencyEvidence", "MasteryRecord", "PlanRevisionProposal",
+    "ScheduleProposal", "PlanningSession", "LlmCall",
     "ModuleTemplate", "ModuleTemplateVersion", "ModuleInstance",
+    "RateLimitCounter",
 ]

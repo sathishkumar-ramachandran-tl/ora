@@ -12,7 +12,21 @@ def _require(name: str, hint: str) -> str:
     return value
 
 
+def _csv(name: str, default: str = "") -> list[str]:
+    return [item.strip() for item in os.environ.get(name, default).split(",") if item.strip()]
+
+
+def _bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
 class Config:
+    ENVIRONMENT = os.environ.get('ORA_ENV') or os.environ.get('FLASK_ENV') or 'development'
+    IS_PRODUCTION = ENVIRONMENT.lower() in {'production', 'prod'}
+
     # No hardcoded fallback, deliberately — a guessable default signing key here means
     # anyone who's read this file (public repo) can forge valid sessions/JWTs against any
     # deployment that forgot to set the env var. Same fail-fast pattern as DATABASE_URL.
@@ -58,6 +72,24 @@ class Config:
     STRIPE_PUBLISHABLE_KEY = os.environ.get('STRIPE_PUBLISHABLE_KEY')
 
     FRONTEND_BASE_URL = os.environ.get('FRONTEND_BASE_URL', 'http://localhost:3000')
+    CORS_ALLOWED_ORIGINS = _csv(
+        'CORS_ALLOWED_ORIGINS',
+        'https://ora.teams-lab.com,https://ora-teamslab.web.app,https://ora-teamslab.firebaseapp.com,http://localhost:5173,http://localhost:3000',
+    )
+    if IS_PRODUCTION and not CORS_ALLOWED_ORIGINS:
+        raise RuntimeError("CORS_ALLOWED_ORIGINS must be explicitly set in production.")
+
+    AUTO_CREATE_TABLES = _bool('AUTO_CREATE_TABLES', False)
+    MAX_CONTENT_LENGTH = int(os.environ.get('MAX_CONTENT_LENGTH', str(10 * 1024 * 1024)))
+    DOCUMENT_MAX_UPLOAD_BYTES = int(os.environ.get('DOCUMENT_MAX_UPLOAD_BYTES', str(10 * 1024 * 1024)))
+    DOCUMENT_ALLOWED_EXTENSIONS = set(_csv('DOCUMENT_ALLOWED_EXTENSIONS', 'pdf,txt,md,doc,docx,png,jpg,jpeg,csv,xlsx'))
+
+    RATE_LIMIT_ENABLED = _bool('RATE_LIMIT_ENABLED', True)
+    RATE_LIMIT_AUTH_PER_MINUTE = int(os.environ.get('RATE_LIMIT_AUTH_PER_MINUTE', '10'))
+    RATE_LIMIT_AI_PER_MINUTE = int(os.environ.get('RATE_LIMIT_AI_PER_MINUTE', '20'))
+    RATE_LIMIT_SEARCH_PER_MINUTE = int(os.environ.get('RATE_LIMIT_SEARCH_PER_MINUTE', '60'))
+    RATE_LIMIT_MUTATION_PER_MINUTE = int(os.environ.get('RATE_LIMIT_MUTATION_PER_MINUTE', '120'))
+    RATE_LIMIT_READ_PER_MINUTE = int(os.environ.get('RATE_LIMIT_READ_PER_MINUTE', '300'))
 
     # --- Google Cloud Storage (Document Vault) ---
     GCS_BUCKET_NAME = os.environ.get('GCS_BUCKET_NAME')

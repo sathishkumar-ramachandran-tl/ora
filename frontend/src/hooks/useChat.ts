@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef } from 'react';
 import {
-  ChatSession, ChatMessage, StreamEvent,
+  AgentActionEvent, ChatScope, ChatSession, ChatMessage, PlanProposal, ScheduleProposal,
   createChatSession, listChatSessions, getChatSession,
   deleteChatSession, streamMessage
 } from '../api/chat';
@@ -11,6 +11,11 @@ export interface UIMessage {
   content: string;
   streaming?: boolean;
   toolCalls?: Array<{ name: string; status: 'running' | 'done' | 'error'; result?: unknown }>;
+  actions?: AgentActionEvent[];
+  plans?: PlanProposal[];
+  schedules?: ScheduleProposal[];
+  runId?: string;
+  runStatus?: string;
   node?: string;
   timestamp: Date;
 }
@@ -24,7 +29,7 @@ interface UseChatState {
   error: string | null;
 }
 
-export function useChat(workspaceId: string) {
+export function useChat(workspaceId: string, scope?: ChatScope) {
   const [state, setState] = useState<UseChatState>({
     sessions: [],
     activeSession: null,
@@ -56,7 +61,7 @@ export function useChat(workspaceId: string) {
   const startNewSession = useCallback(async () => {
     setState(s => ({ ...s, isLoading: true, error: null }));
     try {
-      const session = await createChatSession(workspaceId);
+      const session = await createChatSession(workspaceId, scope);
       setState(s => ({
         ...s,
         sessions: [session, ...s.sessions],
@@ -69,7 +74,7 @@ export function useChat(workspaceId: string) {
       setState(s => ({ ...s, isLoading: false, error: e.message }));
       return null;
     }
-  }, [workspaceId]);
+  }, [workspaceId, scope]);
 
   // -------------------------------------------------------------------------
   // Load an existing session (restore history)
@@ -91,7 +96,16 @@ export function useChat(workspaceId: string) {
       }));
       setState(s => ({
         ...s,
-        activeSession: { id: data.id, title: data.title, workspaceId: data.workspaceId, createdAt: data.createdAt, updatedAt: data.updatedAt },
+        activeSession: {
+          id: data.id,
+          title: data.title,
+          workspaceId: data.workspaceId,
+          scopeLevel: data.scopeLevel,
+          scopeProjectId: data.scopeProjectId,
+          scopeTaskId: data.scopeTaskId,
+          createdAt: data.createdAt,
+          updatedAt: data.updatedAt
+        },
         messages: uiMessages,
         isLoading: false
       }));
@@ -156,7 +170,7 @@ export function useChat(workspaceId: string) {
     abortRef.current = () => { cancelled = true; };
 
     try {
-      for await (const event of streamMessage(session.id, content, workspaceId)) {
+      for await (const event of streamMessage(session.id, content, workspaceId, scope)) {
         if (cancelled) break;
 
         setState(s => {
@@ -166,9 +180,26 @@ export function useChat(workspaceId: string) {
 
           const msg = { ...msgs[idx] };
 
-          if (event.type === 'chunk') {
+          if (event.type === 'agent_run_started') {
+            msg.runId = event.runId;
+          } else if (event.type === 'chunk') {
             msg.content += event.content;
             msg.node = event.node;
+          } else if (event.type === 'plan_proposed' || event.type === 'plan_updated' || event.type === 'plan_applied') {
+            const existing = msg.plans || [];
+            msg.plans = [...existing.filter(p => p.id !== event.plan.id), event.plan];
+          } else if (event.type === 'schedule_proposed' || event.type === 'schedule_updated' || event.type === 'schedule_applied') {
+            const existing = msg.schedules || [];
+            msg.schedules = [...existing.filter(p => p.id !== event.schedule.id), event.schedule];
+          } else if (
+            event.type === 'action_proposed' ||
+            event.type === 'action_started' ||
+            event.type === 'action_completed' ||
+            event.type === 'action_failed' ||
+            event.type === 'confirmation_required'
+          ) {
+            const existing = msg.actions || [];
+            msg.actions = [...existing.filter(a => a.id !== event.action.id), event.action];
           } else if (event.type === 'tool_call') {
             msg.toolCalls = [
               ...(msg.toolCalls || []),
@@ -180,6 +211,9 @@ export function useChat(workspaceId: string) {
             );
           } else if (event.type === 'done') {
             msg.streaming = false;
+          } else if (event.type === 'agent_run_completed') {
+            msg.runId = event.runId;
+            msg.runStatus = event.status;
           } else if (event.type === 'error') {
             msg.content = `Error: ${event.message}`;
             msg.streaming = false;
@@ -202,7 +236,7 @@ export function useChat(workspaceId: string) {
       setState(s => ({ ...s, isSending: false }));
       abortRef.current = null;
     }
-  }, [state.isSending, state.activeSession, startNewSession, workspaceId]);
+  }, [state.isSending, state.activeSession, startNewSession, workspaceId, scope]);
 
   const cancelStream = useCallback(() => {
     abortRef.current?.();

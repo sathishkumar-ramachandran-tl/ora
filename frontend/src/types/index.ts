@@ -229,6 +229,9 @@ export interface CalendarEvent {
   attendees?: string[];
   isRecurringOccurrence?: boolean;
   organizationId?: string;
+  isFlexible?: boolean;
+  locked?: boolean;
+  sessionStatus?: 'SCHEDULED' | 'ACTIVE' | 'COMPLETED' | 'MISSED' | 'MOVED' | string;
 }
 
 // --- Agentic Module Generation (Phase 1) ---

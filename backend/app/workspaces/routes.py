@@ -1,4 +1,4 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, g
 from flask_jwt_extended import jwt_required, get_jwt_identity
 
 from ..core.extensions import db
@@ -123,7 +123,7 @@ def get_full_state(ws_id):
             is_owner = workspace and workspace.owner_id == current_user
             has_project_access = ProjectMember.query.filter_by(project_id=p.id, user_id=current_user).first() is not None
 
-            if is_owner or has_project_access:
+            if is_member or is_owner or has_project_access:
                 tasks = Task.query.filter_by(project_id=p.id).all()
                 c_data['projects'].append({
                     "id": p.id, "workspaceId": p.workspace_id, "companyId": p.company_id,
@@ -144,6 +144,177 @@ def get_full_state(ws_id):
         result.append(c_data)
 
     return jsonify(result)
+
+
+@workspace_bp.route('/workspaces/<ws_id>/home', methods=['GET'])
+@jwt_required()
+def get_workspace_home(ws_id):
+    from ..agents.execution_context import ExecutionContext, execution_context
+    from ..agents.adaptation import execution_signal_audit, plan_health, retrieval_benchmark
+    from ..agents.models import PlanProposal, PlanRevisionProposal, ScheduleProposal
+    from ..agents.planning import serialize_plan
+    from ..agents.replanning import serialize_revision
+    from ..agents.schedule_metrics import schedule_metrics
+    from ..agents.scheduling import serialize_schedule
+    from ..agents.today import recommend_today, today_calendar_summary
+    from ..core.authz import user_can_access_workspace
+    from ..projects.models import Project
+    from ..tasks.models import Task
+
+    current_user = get_jwt_identity()
+    if not user_can_access_workspace(current_user, ws_id):
+        return jsonify({"error": "Forbidden"}), 403
+
+    overrides = {
+        "available_minutes": request.args.get("availableMinutes") or request.args.get("available_minutes"),
+        "exclude_terms": request.args.getlist("exclude"),
+        "prefer_terms": request.args.getlist("prefer"),
+    }
+    ctx = ExecutionContext(
+        request_id=getattr(g, "request_id", None),
+        user_id=current_user,
+        workspace_id=ws_id,
+        session_id=None,
+        run_id=None,
+        scope_level="workspace",
+    )
+    with execution_context(ctx):
+        today = recommend_today(ctx, overrides)
+        calendar = today_calendar_summary(ctx)
+        scheduling_metrics = schedule_metrics(ctx)
+        health = plan_health(ctx)
+        signals = execution_signal_audit(ctx)
+        retrieval = retrieval_benchmark(ctx)
+
+    projects = Project.query.filter_by(workspace_id=ws_id).order_by(Project.progress.asc()).limit(6).all()
+    active_projects = []
+    for project in projects:
+        total = Task.query.filter_by(project_id=project.id).count()
+        done = Task.query.filter_by(project_id=project.id, status="done").count()
+        active_projects.append({
+            "id": project.id,
+            "name": project.name,
+            "type": project.type,
+            "progress": project.progress,
+            "task_count": total,
+            "done_count": done,
+        })
+
+    pending_plan = PlanProposal.query.filter(
+        PlanProposal.workspace_id == ws_id,
+        PlanProposal.status.in_(["READY", "REVIEWING", "WAITING_FOR_CONFIRMATION"]),
+    ).order_by(PlanProposal.created_at.desc()).first()
+    pending_revision = PlanRevisionProposal.query.filter_by(
+        workspace_id=ws_id,
+        status="PROPOSED",
+    ).order_by(PlanRevisionProposal.created_at.desc()).first()
+    pending_schedule = ScheduleProposal.query.filter(
+        ScheduleProposal.workspace_id == ws_id,
+        ScheduleProposal.status.in_(["READY", "INFEASIBLE"]),
+    ).order_by(ScheduleProposal.created_at.desc()).first()
+
+    alerts = []
+    if today.get("now") and today["now"].get("mastery_reason"):
+        alerts.append({"type": "mastery_review", "message": today["now"]["mastery_reason"]})
+    if pending_revision:
+        alerts.append({"type": "plan_revision", "message": "A plan update is waiting for review."})
+    if pending_schedule:
+        alerts.append({"type": "schedule_proposal", "message": "A schedule proposal is waiting for review."})
+    if health["status"] != "HEALTHY":
+        alerts.append({"type": "plan_health", "message": health["reasons"][0]})
+
+    return jsonify({
+        "workspace": {"id": ws_id},
+        "today": today,
+        "calendar": calendar,
+        "active_projects": active_projects,
+        "pending_plan": serialize_plan(pending_plan) if pending_plan else None,
+        "pending_revision": serialize_revision(pending_revision) if pending_revision else None,
+        "pending_schedule": serialize_schedule(pending_schedule) if pending_schedule else None,
+        "scheduling_metrics": scheduling_metrics,
+        "plan_health": health,
+        "execution_signals": signals,
+        "retrieval_benchmark": retrieval,
+        "alerts": alerts,
+    })
+
+
+@workspace_bp.route('/workspaces/<ws_id>/search', methods=['GET'])
+@jwt_required()
+def search_workspace(ws_id):
+    from ..agents.models import Concept, PlanProposal
+    from ..core.authz import user_can_access_workspace
+    from ..projects.models import Project
+    from ..tasks.models import Task
+
+    current_user = get_jwt_identity()
+    if not user_can_access_workspace(current_user, ws_id):
+        return jsonify({"error": "Forbidden"}), 403
+    q = (request.args.get("q") or "").strip()
+    if len(q) < 2:
+        return jsonify({"query": q, "results": []})
+    like = f"%{q}%"
+    results = []
+    for project in Project.query.filter(Project.workspace_id == ws_id, Project.name.ilike(like)).limit(5).all():
+        results.append({"type": "project", "id": project.id, "title": project.name, "subtitle": project.mission, "scope": {"level": "project", "projectId": project.id}})
+    for task in Task.query.filter(Task.workspace_id == ws_id, Task.title.ilike(like)).limit(8).all():
+        results.append({"type": "task", "id": task.id, "title": task.title, "subtitle": task.status, "scope": {"level": "task", "taskId": task.id, "projectId": task.project_id}})
+    for plan in PlanProposal.query.filter(PlanProposal.workspace_id == ws_id, PlanProposal.title.ilike(like)).limit(5).all():
+        results.append({"type": "plan", "id": plan.id, "title": plan.title, "subtitle": plan.status, "scope": {"level": plan.scope_level, "projectId": plan.scope_project_id, "taskId": plan.scope_task_id}})
+    for concept in Concept.query.filter(Concept.workspace_id == ws_id, Concept.canonical_name.ilike(like)).limit(8).all():
+        results.append({"type": "concept", "id": concept.id, "title": concept.canonical_name, "subtitle": concept.domain, "conceptKey": concept.concept_key})
+    return jsonify({"query": q, "results": results[:20]})
+
+
+@workspace_bp.route('/workspaces/<ws_id>/assessments', methods=['POST'])
+@jwt_required()
+def create_assessment_evidence(ws_id):
+    from ..agents.coverage import infer_domain
+    from ..agents.execution_context import ExecutionContext, execution_context
+    from ..agents.mastery import record_competency_evidence, serialize_mastery
+    from ..agents.adaptation import adapt_from_signal, signal_from_mastery
+    from ..core.authz import user_can_access_workspace
+
+    current_user = get_jwt_identity()
+    if not user_can_access_workspace(current_user, ws_id):
+        return jsonify({"error": "Forbidden"}), 403
+
+    data = request.json or {}
+    concept_name = (data.get("concept_name") or data.get("conceptName") or "").strip()
+    if not concept_name:
+        return jsonify({"error": "conceptName is required"}), 400
+    evidence_type = data.get("evidence_type") or data.get("evidenceType") or "assessment"
+    result = data.get("result") or {}
+    domain = data.get("domain") or infer_domain(concept_name)
+    ctx = ExecutionContext(
+        request_id=getattr(g, "request_id", None),
+        user_id=current_user,
+        workspace_id=ws_id,
+        session_id=None,
+        run_id=None,
+        scope_level="workspace",
+    )
+    with execution_context(ctx):
+        evidence, mastery = record_competency_evidence(
+            ctx,
+            concept_name=concept_name,
+            domain=domain,
+            evidence_type=evidence_type,
+            result=result,
+            strength=data.get("strength"),
+            evidence_ref=data.get("evidence_ref") or data.get("evidenceRef"),
+        )
+        adaptation = adapt_from_signal(ctx, signal_from_mastery(mastery))
+    return jsonify({
+        "evidence": {
+            "id": evidence.id,
+            "evidence_type": evidence.evidence_type,
+            "strength": evidence.strength,
+            "result": evidence.result,
+        },
+        "mastery": serialize_mastery([mastery])[0],
+        "adaptation": adaptation,
+    }), 201
 
 
 @workspace_bp.route('/workspaces/<ws_id>', methods=['PATCH'])

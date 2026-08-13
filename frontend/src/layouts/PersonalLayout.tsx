@@ -1,9 +1,9 @@
 import React from 'react';
 import {
-  LayoutDashboard, Network, Calendar, ChevronRight, Plus, PlusCircle,
+  Network, Calendar, ChevronRight, Plus, PlusCircle,
   HardDrive, Users, LogOut, Languages, Lightbulb, Menu, X,
   Target, Globe, Briefcase, Bot, Home, FolderOpen, Sparkles,
-  ChevronDown, Check, Building2, User
+  ChevronDown, Check, Building2, User, Search, Library, Zap, Command
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { createWorkspace } from '../api/workspace';
@@ -22,25 +22,14 @@ interface PersonalLayoutProps {
   onAddCompany: () => void;
   onAddProject: (cid: string) => void;
   headerActions?: React.ReactNode;
+  onNewCommand?: (content: string) => void;
 }
-
-const getLabels = (persona: string = 'general') => {
-  if (persona.includes('student') || persona.includes('upsc')) {
-    return { company: 'Subject / Area', project: 'Module' };
-  }
-  if (persona.includes('researcher')) {
-    return { company: 'Research Domain', project: 'Paper / Grant' };
-  }
-  return { company: 'Initiative', project: 'Project' };
-};
 
 // Bottom nav items for mobile
 const BOTTOM_NAV = [
   { id: 'dashboard', icon: Home, label: 'Home' },
-  { id: 'schedule', icon: Calendar, label: 'Schedule' },
-  { id: 'graph', icon: Network, label: 'Graph' },
-  { id: 'ideas', icon: Lightbulb, label: 'Ideas' },
-  { id: 'documents', icon: HardDrive, label: 'Vault' },
+  { id: 'work', icon: Target, label: 'Work' },
+  { id: 'search', icon: Search, label: 'Search' },
 ];
 
 export const PersonalLayout: React.FC<PersonalLayoutProps> = ({
@@ -54,7 +43,8 @@ export const PersonalLayout: React.FC<PersonalLayoutProps> = ({
   onSelectProject,
   onAddCompany,
   onAddProject,
-  headerActions
+  headerActions,
+  onNewCommand
 }) => {
   const { user, workspace, workspaces, logout, switchWorkspace, refreshWorkspaces } = useAuth();
   const [language, setLanguage] = React.useState<Language>('en');
@@ -64,10 +54,26 @@ export const PersonalLayout: React.FC<PersonalLayoutProps> = ({
   const [creatingWs, setCreatingWs] = React.useState(false);
   const [newWsName, setNewWsName] = React.useState('');
   const [newWsType, setNewWsType] = React.useState<'personal' | 'company'>('personal');
+  const [isNewOpen, setIsNewOpen] = React.useState(false);
+  const [newIntent, setNewIntent] = React.useState('');
 
-  const currentCompany = companies.find(c => c.id === selectedCompanyId);
-  const currentProject = currentCompany?.projects.find(p => p.id === selectedProjectId);
-  const labels = getLabels(workspace?.persona);
+  const currentCompany = selectedCompanyId
+    ? companies.find(c => c.id === selectedCompanyId)
+    : companies.find(c => (c.projects || []).some(p => p.id === selectedProjectId));
+  const currentProject = selectedProjectId
+    ? companies.flatMap(c => c.projects || []).find(p => p.id === selectedProjectId)
+    : null;
+
+  React.useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        onTabChange('search');
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [onTabChange]);
 
   const toggleCompany = (id: string) => {
     setExpandedCompanies(prev => {
@@ -89,26 +95,37 @@ export const PersonalLayout: React.FC<PersonalLayoutProps> = ({
   };
 
   const PageTitle = () => {
-    if (activeTab === 'dashboard') return <><Target className="text-indigo-600 flex-shrink-0" size={18} /><span className="truncate">Neural Overview</span></>;
-    if (activeTab === 'documents') return <><HardDrive className="text-indigo-600 flex-shrink-0" size={18} /><span className="truncate">Secure Vault</span></>;
-    if (activeTab === 'team') return <><Users className="text-indigo-600 flex-shrink-0" size={18} /><span className="truncate">Team & Roles</span></>;
-    if (activeTab === 'graph') return <><Network className="text-indigo-600 flex-shrink-0" size={18} /><span className="truncate">Knowledge Graph</span></>;
-    if (activeTab === 'schedule') return <><Calendar className="text-indigo-600 flex-shrink-0" size={18} /><span className="truncate">Schedule</span></>;
-    if (activeTab === 'ideas') return <><Lightbulb className="text-indigo-600 flex-shrink-0" size={18} /><span className="truncate">Idea Incubator</span></>;
-    if (activeTab === 'modules') return <><Sparkles className="text-indigo-600 flex-shrink-0" size={18} /><span className="truncate">Module Marketplace</span></>;
-    if (activeTab === 'company' && currentCompany) return <><Globe className="text-indigo-600 flex-shrink-0" size={18} /><span className="truncate">{currentCompany.name}</span></>;
+    if (activeTab === 'dashboard') return <><Home className="text-ora-accent flex-shrink-0" size={18} /><span className="truncate">Home</span></>;
+    if (activeTab === 'work') return <><Target className="text-ora-accent flex-shrink-0" size={18} /><span className="truncate">Work</span></>;
+    if (activeTab === 'search') return <><Search className="text-ora-accent flex-shrink-0" size={18} /><span className="truncate">Search</span></>;
+    if (activeTab === 'documents') return <><Library className="text-ora-accent flex-shrink-0" size={18} /><span className="truncate">Library</span></>;
+    if (activeTab === 'team') return <><Users className="text-ora-accent flex-shrink-0" size={18} /><span className="truncate">Team</span></>;
+    if (activeTab === 'graph') return <><Network className="text-ora-accent flex-shrink-0" size={18} /><span className="truncate">Explore connections</span></>;
+    if (activeTab === 'schedule') return <><Calendar className="text-ora-accent flex-shrink-0" size={18} /><span className="truncate">Calendar detail</span></>;
+    if (activeTab === 'ideas') return <><Lightbulb className="text-ora-accent flex-shrink-0" size={18} /><span className="truncate">Ideas</span></>;
+    if (activeTab === 'modules') return <><Sparkles className="text-ora-accent flex-shrink-0" size={18} /><span className="truncate">Capabilities</span></>;
+    if (activeTab === 'automations') return <><Zap className="text-ora-accent flex-shrink-0" size={18} /><span className="truncate">Automations</span></>;
+    if (activeTab === 'company' && currentCompany) return <><Globe className="text-ora-accent flex-shrink-0" size={18} /><span className="truncate">{currentCompany.name}</span></>;
     if (activeTab === 'project' && currentProject) return (
       <>
-        <Briefcase className="text-indigo-600 flex-shrink-0" size={18} />
-        <span className="text-slate-400 font-normal hidden sm:inline truncate max-w-[80px]">{currentCompany?.name} /</span>
+        <Briefcase className="text-ora-accent flex-shrink-0" size={18} />
+        <span className="text-ora-tertiary font-normal hidden sm:inline truncate max-w-[80px]">{currentCompany?.name} /</span>
         <span className="truncate">{currentProject.name}</span>
       </>
     );
     return <span className="truncate">Ora</span>;
   };
 
+  const submitIntent = (content: string) => {
+    const trimmed = content.trim();
+    if (!trimmed) return;
+    onNewCommand?.(trimmed);
+    setNewIntent('');
+    setIsNewOpen(false);
+  };
+
   return (
-    <div className="flex h-screen bg-slate-50 overflow-hidden">
+    <div className="flex h-screen bg-ora-canvas overflow-hidden">
       {/* Mobile backdrop */}
       {isSidebarOpen && (
         <div
@@ -121,7 +138,7 @@ export const PersonalLayout: React.FC<PersonalLayoutProps> = ({
       {/* Sidebar — fixed on desktop, slide-in drawer on mobile              */}
       {/* ------------------------------------------------------------------ */}
       <aside className={`
-        fixed inset-y-0 left-0 z-50 w-72 bg-slate-900 text-slate-300
+        ora-app-sidebar fixed inset-y-0 left-0 z-50 w-72 bg-ora-nav text-white/70
         flex flex-col flex-shrink-0 transition-transform duration-300 ease-in-out shadow-2xl
         md:relative md:w-64 md:translate-x-0
         ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}
@@ -130,7 +147,7 @@ export const PersonalLayout: React.FC<PersonalLayoutProps> = ({
         <div className="px-3 pt-4 pb-2">
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-2">
-              <div className="w-6 h-6 rounded-md bg-indigo-600 flex items-center justify-center flex-shrink-0">
+              <div className="w-6 h-6 rounded-md bg-ora-accent flex items-center justify-center flex-shrink-0 shadow-sm shadow-ora-accent/25">
                 <Bot size={12} className="text-white" />
               </div>
               <span className="text-white font-bold text-sm tracking-tight">Ora</span>
@@ -144,43 +161,43 @@ export const PersonalLayout: React.FC<PersonalLayoutProps> = ({
           <div className="relative">
             <button
               onClick={() => setWsMenuOpen(v => !v)}
-              className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 transition-colors group">
+              className="ora-nav-surface w-full flex items-center gap-2 px-2.5 py-2 rounded-lg bg-ora-nav-surface border border-white/10 hover:border-white/20 transition-colors group">
               <div className={`w-5 h-5 rounded flex items-center justify-center flex-shrink-0
-                ${workspace?.context === 'company' ? 'bg-blue-600' : 'bg-indigo-600'}`}>
+                ${workspace?.context === 'company' ? 'bg-ora-info' : 'bg-ora-accent'}`}>
                 {workspace?.context === 'company'
                   ? <Building2 size={11} className="text-white" />
                   : <User size={11} className="text-white" />}
               </div>
-              <span className="flex-1 text-left text-xs font-medium text-slate-200 truncate">{workspace?.name}</span>
-              <ChevronDown size={12} className={`text-slate-500 transition-transform flex-shrink-0 ${wsMenuOpen ? 'rotate-180' : ''}`} />
+              <span className="flex-1 text-left text-xs font-medium text-white truncate">{workspace?.name}</span>
+              <ChevronDown size={12} className={`text-white/45 transition-transform flex-shrink-0 ${wsMenuOpen ? 'rotate-180' : ''}`} />
             </button>
 
             {wsMenuOpen && (
               <>
                 <div className="fixed inset-0 z-40" onClick={() => setWsMenuOpen(false)} />
-                <div className="absolute top-full left-0 right-0 mt-1 bg-slate-800 border border-slate-700 rounded-xl shadow-2xl z-50 overflow-hidden">
+                <div className="absolute top-full left-0 right-0 mt-1 bg-ora-nav border border-white/10 rounded-xl shadow-2xl z-50 overflow-hidden">
                   <div className="p-1">
                     {workspaces.map(ws => (
                       <button
                         key={ws.id}
                         onClick={() => { switchWorkspace(ws.id); setWsMenuOpen(false); }}
-                        className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg hover:bg-slate-700 transition-colors text-left">
+                        className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg hover:bg-white/10 transition-colors text-left">
                         <div className={`w-4 h-4 rounded flex items-center justify-center flex-shrink-0
-                          ${ws.context === 'company' ? 'bg-blue-600/80' : 'bg-indigo-600/80'}`}>
+                          ${ws.context === 'company' ? 'bg-ora-info' : 'bg-ora-accent'}`}>
                           {ws.context === 'company'
                             ? <Building2 size={9} className="text-white" />
                             : <User size={9} className="text-white" />}
                         </div>
-                        <span className="flex-1 text-xs text-slate-300 truncate">{ws.name}</span>
-                        {ws.id === workspace?.id && <Check size={11} className="text-indigo-400 flex-shrink-0" />}
+                        <span className="flex-1 text-xs text-white/75 truncate">{ws.name}</span>
+                        {ws.id === workspace?.id && <Check size={11} className="text-ora-accent flex-shrink-0" />}
                       </button>
                     ))}
                   </div>
-                  <div className="border-t border-slate-700 p-1">
+                    <div className="border-t border-white/10 p-1">
                     {!creatingWs ? (
                       <button
                         onClick={() => setCreatingWs(true)}
-                        className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg hover:bg-slate-700 transition-colors text-xs text-indigo-400">
+                        className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg hover:bg-white/10 transition-colors text-xs text-ora-accent">
                         <Plus size={11} /> New Workspace
                       </button>
                     ) : (
@@ -189,13 +206,13 @@ export const PersonalLayout: React.FC<PersonalLayoutProps> = ({
                           <button
                             onClick={() => setNewWsType('personal')}
                             className={`flex-1 text-[10px] py-1 rounded-md border transition-colors
-                              ${newWsType === 'personal' ? 'border-indigo-500 bg-indigo-500/20 text-indigo-300' : 'border-slate-600 text-slate-400 hover:border-slate-500'}`}>
+                              ${newWsType === 'personal' ? 'border-ora-accent bg-ora-accent/20 text-white' : 'border-white/15 text-ora-nav-muted hover:border-white/25'}`}>
                             Personal
                           </button>
                           <button
                             onClick={() => setNewWsType('company')}
                             className={`flex-1 text-[10px] py-1 rounded-md border transition-colors
-                              ${newWsType === 'company' ? 'border-blue-500 bg-blue-500/20 text-blue-300' : 'border-slate-600 text-slate-400 hover:border-slate-500'}`}>
+                              ${newWsType === 'company' ? 'border-ora-info bg-ora-info/20 text-white' : 'border-white/15 text-ora-nav-muted hover:border-white/25'}`}>
                             Company
                           </button>
                         </div>
@@ -215,9 +232,9 @@ export const PersonalLayout: React.FC<PersonalLayoutProps> = ({
                             if (e.key === 'Escape') { setCreatingWs(false); setNewWsName(''); }
                           }}
                           placeholder="Workspace name…"
-                          className="w-full bg-slate-700 border border-slate-600 rounded-md px-2 py-1 text-xs text-white placeholder-slate-500 outline-none focus:border-indigo-500"
+                        className="ora-nav-surface w-full bg-ora-nav-surface border border-white/15 rounded-md px-2 py-1 text-xs text-white placeholder:text-ora-nav-muted/60 outline-none focus:border-ora-accent"
                         />
-                        <p className="text-[10px] text-slate-500">Press Enter to create · Esc to cancel</p>
+                        <p className="text-[10px] text-ora-nav-muted/60">Press Enter to create · Esc to cancel</p>
                       </div>
                     )}
                   </div>
@@ -227,32 +244,43 @@ export const PersonalLayout: React.FC<PersonalLayoutProps> = ({
           </div>
         </div>
 
-        <nav className="flex-1 px-3 pt-2 space-y-5 overflow-y-auto">
-          {/* Cognitive Core */}
+        <div className="px-3 pt-2">
+          <button
+            onClick={() => setIsNewOpen(true)}
+            className="flex w-full items-center gap-2 rounded-lg bg-ora-accent px-3 py-2 text-sm font-semibold text-white shadow-sm shadow-black/20 hover:bg-ora-accent-hover">
+            <Plus size={15} /> New
+          </button>
+        </div>
+
+        <nav className="flex-1 px-3 pt-4 space-y-5 overflow-y-auto">
+          {/* Primary */}
           <div>
-            <p className="px-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Cognitive Core</p>
+            <p className="px-3 text-[10px] font-bold text-white/35 uppercase tracking-widest mb-1.5">Primary</p>
             {[
-              { id: 'dashboard', icon: LayoutDashboard, label: 'Overview' },
-              { id: 'schedule', icon: Calendar, label: 'Schedule' },
+              { id: 'dashboard', icon: Home, label: 'Home' },
+              { id: 'work', icon: Target, label: 'Work' },
+              { id: 'search', icon: Search, label: 'Search' },
             ].map(({ id, icon: Icon, label }) => (
-              <button key={id} onClick={() => { onTabChange(id); setIsSidebarOpen(false); }}
+              <button key={id} onClick={() => {
+                onTabChange(id); setIsSidebarOpen(false);
+              }}
                 className={`w-full flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all
-                  ${activeTab === id ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-600/30' : 'hover:bg-slate-800/70 text-slate-400 hover:text-slate-200'}`}>
+                  ${activeTab === id ? 'bg-ora-accent/15 text-white border border-ora-accent/35 shadow-[inset_3px_0_0_rgb(var(--ora-accent))]' : 'hover:bg-white/10 text-ora-nav-muted hover:text-white/85'}`}>
                 <Icon size={14} /> {label}
               </button>
             ))}
           </div>
 
-          {/* Initiatives */}
+          {/* Projects */}
           <div>
             <div className="px-3 flex items-center justify-between mb-1.5">
-              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{labels.company}s</p>
-              <button onClick={onAddCompany} className="text-slate-500 hover:text-indigo-400 transition-colors p-0.5 rounded" title={`Add ${labels.company}`}>
+              <p className="text-[10px] font-bold text-white/35 uppercase tracking-widest">Projects</p>
+              <button onClick={onAddCompany} className="text-white/35 hover:text-ora-accent transition-colors p-0.5 rounded" title="Add project group">
                 <PlusCircle size={14} />
               </button>
             </div>
             {companies.length === 0 && (
-              <div className="px-3 py-2 text-xs text-slate-600 italic">No {labels.company.toLowerCase()}s yet.</div>
+              <div className="px-3 py-2 text-xs text-white/30 italic">No projects yet.</div>
             )}
             <div className="space-y-0.5">
               {companies.map(company => {
@@ -262,8 +290,11 @@ export const PersonalLayout: React.FC<PersonalLayoutProps> = ({
                   <div key={company.id}>
                     {/* Company row */}
                     <div className={`flex items-center gap-2 px-3 py-2 rounded-xl cursor-pointer group transition-all
-                      ${isActiveCompany && activeTab === 'company' ? 'bg-slate-800 text-white' : 'hover:bg-slate-800/50 text-slate-400 hover:text-slate-200'}`}>
-                      <span className={`w-2 h-2 rounded-full flex-shrink-0 bg-${company.color || 'indigo'}-500`} />
+                      ${isActiveCompany && activeTab === 'company' ? 'bg-ora-accent/15 text-white shadow-[inset_3px_0_0_rgb(var(--ora-accent))]' : 'hover:bg-white/10 text-ora-nav-muted hover:text-white/85'}`}>
+                      <span
+                        className="w-2 h-2 rounded-full flex-shrink-0 bg-ora-accent"
+                        style={company.color ? { backgroundColor: company.color } : undefined}
+                      />
                       <span
                         className="flex-1 text-xs font-medium truncate"
                         onClick={() => handleSelectCompany(company.id)}>
@@ -272,21 +303,21 @@ export const PersonalLayout: React.FC<PersonalLayoutProps> = ({
                       <div className="flex items-center gap-1 flex-shrink-0">
                         <button
                           onClick={e => { e.stopPropagation(); onAddProject(company.id); }}
-                          className="opacity-0 group-hover:opacity-100 text-slate-600 hover:text-indigo-400 transition-all p-0.5">
+                          className="opacity-0 group-hover:opacity-100 text-white/30 hover:text-ora-accent transition-all p-0.5">
                           <Plus size={12} />
                         </button>
                         <button
                           onClick={() => toggleCompany(company.id)}
-                          className="text-slate-600 hover:text-slate-300 transition-colors p-0.5">
+                          className="text-white/30 hover:text-white/75 transition-colors p-0.5">
                           <ChevronRight size={13} className={`transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`} />
                         </button>
                       </div>
                     </div>
                     {/* Projects */}
                     {isExpanded && (
-                      <div className="ml-4 pl-2 border-l border-slate-800 space-y-0.5 mt-0.5 mb-1">
+                      <div className="ml-4 pl-2 border-l border-white/10 space-y-0.5 mt-0.5 mb-1">
                         {company.projects?.length === 0 && (
-                          <p className="text-[11px] text-slate-600 px-2 py-1">No {labels.project.toLowerCase()}s</p>
+                          <p className="text-[11px] text-white/30 px-2 py-1">No outcomes</p>
                         )}
                         {company.projects?.map(project => (
                           <button
@@ -294,8 +325,8 @@ export const PersonalLayout: React.FC<PersonalLayoutProps> = ({
                             onClick={() => handleSelectProject(project.id, company.id)}
                             className={`w-full text-left flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs transition-all
                               ${selectedProjectId === project.id
-                                ? 'bg-indigo-600/15 text-indigo-300 border border-indigo-600/25'
-                                : 'text-slate-500 hover:text-slate-200 hover:bg-slate-800/50'}`}>
+                                ? 'bg-ora-accent/15 text-white border border-ora-accent/30 shadow-[inset_3px_0_0_rgb(var(--ora-accent))]'
+                                : 'text-ora-nav-muted/75 hover:text-white/85 hover:bg-white/10'}`}>
                             <FolderOpen size={12} className="flex-shrink-0" />
                             <span className="truncate flex-1">{project.name}</span>
                             {selectedProjectId === project.id && <ChevronRight size={11} />}
@@ -309,19 +340,33 @@ export const PersonalLayout: React.FC<PersonalLayoutProps> = ({
             </div>
           </div>
 
-          {/* Second Brain */}
+          {/* Secondary */}
           <div>
-            <p className="px-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Second Brain</p>
+            <p className="px-3 text-[10px] font-bold text-white/35 uppercase tracking-widest mb-1.5">Secondary</p>
             {[
-              { id: 'modules', icon: Sparkles, label: 'Modules' },
-              { id: 'graph', icon: Network, label: 'Neural Graph' },
-              { id: 'ideas', icon: Lightbulb, label: 'Incubator' },
-              { id: 'documents', icon: HardDrive, label: 'Vault' },
+              { id: 'documents', icon: Library, label: 'Library' },
+              { id: 'automations', icon: Zap, label: 'Automations' },
+              { id: 'modules', icon: Sparkles, label: 'Capabilities' },
               ...(workspace?.context === 'company' ? [{ id: 'team', icon: Users, label: 'Team' }] : []),
             ].map(({ id, icon: Icon, label }) => (
               <button key={id} onClick={() => { onTabChange(id); setIsSidebarOpen(false); }}
                 className={`w-full flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all
-                  ${activeTab === id ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-600/30' : 'hover:bg-slate-800/70 text-slate-400 hover:text-slate-200'}`}>
+                  ${activeTab === id ? 'bg-ora-accent/15 text-white border border-ora-accent/35 shadow-[inset_3px_0_0_rgb(var(--ora-accent))]' : 'hover:bg-white/10 text-ora-nav-muted hover:text-white/85'}`}>
+                <Icon size={14} /> {label}
+              </button>
+            ))}
+          </div>
+
+          <div>
+            <p className="px-3 text-[10px] font-bold text-white/35 uppercase tracking-widest mb-1.5">Advanced</p>
+            {[
+              { id: 'schedule', icon: Calendar, label: 'Calendar detail' },
+              { id: 'graph', icon: Network, label: 'Explore connections' },
+              { id: 'ideas', icon: Lightbulb, label: 'Ideas' },
+            ].map(({ id, icon: Icon, label }) => (
+              <button key={id} onClick={() => { onTabChange(id); setIsSidebarOpen(false); }}
+                className={`w-full flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all
+                  ${activeTab === id ? 'bg-ora-accent/15 text-white border border-ora-accent/35 shadow-[inset_3px_0_0_rgb(var(--ora-accent))]' : 'hover:bg-white/10 text-ora-nav-muted hover:text-white/85'}`}>
                 <Icon size={14} /> {label}
               </button>
             ))}
@@ -329,25 +374,25 @@ export const PersonalLayout: React.FC<PersonalLayoutProps> = ({
         </nav>
 
         {/* Footer */}
-        <div className="p-4 border-t border-slate-800">
-          <div className="flex items-center gap-3 text-sm text-slate-400 mb-3">
-            <div className="w-9 h-9 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold text-sm flex-shrink-0 overflow-hidden">
+        <div className="p-4 border-t border-white/10">
+          <div className="flex items-center gap-3 text-sm text-ora-nav-muted mb-3">
+            <div className="ora-nav-surface w-9 h-9 rounded-full bg-ora-nav-surface border border-white/10 flex items-center justify-center text-white font-bold text-sm flex-shrink-0 overflow-hidden">
               {user?.avatar ? <img src={user.avatar} className="w-full h-full object-cover" alt="avatar" /> : user?.name?.charAt(0)}
             </div>
             <div className="flex-1 overflow-hidden">
               <p className="text-white text-sm font-medium truncate">{user?.name}</p>
-              <p className="text-[10px] truncate text-indigo-400">{workspace?.persona?.replace(/_/g, ' ').toUpperCase()}</p>
+              <p className="text-[10px] truncate text-ora-accent">{workspace?.context === 'company' ? 'TEAM WORKSPACE' : 'PERSONAL WORKSPACE'}</p>
             </div>
-            <button onClick={logout} className="hover:text-red-400 transition-colors p-1 rounded-lg hover:bg-slate-800">
+            <button onClick={logout} className="hover:text-ora-danger transition-colors p-1 rounded-lg hover:bg-white/10">
               <LogOut size={15} />
             </button>
           </div>
-          <div className="flex items-center justify-between text-xs text-slate-500">
+          <div className="flex items-center justify-between text-xs text-ora-nav-muted/70">
             <div className="flex items-center gap-1"><Languages size={12} /> Lang</div>
             <select
               value={language}
               onChange={e => setLanguage(e.target.value as Language)}
-              className="bg-slate-800 border border-slate-700 rounded-lg text-slate-300 text-xs py-1 px-2 outline-none cursor-pointer">
+              className="ora-nav-surface bg-ora-nav-surface border border-white/10 rounded-lg text-ora-nav-muted text-xs py-1 px-2 outline-none cursor-pointer">
               <option value="en">English</option>
               <option value="es">Español</option>
               <option value="fr">Français</option>
@@ -360,27 +405,27 @@ export const PersonalLayout: React.FC<PersonalLayoutProps> = ({
       {/* ------------------------------------------------------------------ */}
       {/* Main content area                                                  */}
       {/* ------------------------------------------------------------------ */}
-      <main className="flex-1 overflow-hidden bg-white relative flex flex-col w-full min-w-0">
+      <main className="ora-app-main flex-1 overflow-hidden bg-ora-canvas relative flex flex-col w-full min-w-0">
         {/* Top header */}
-        <header className="h-14 border-b border-slate-200 flex items-center px-4 justify-between
-          bg-white/80 backdrop-blur-sm flex-shrink-0 z-30">
+        <header className="h-14 border-b border-ora-border flex items-center px-4 justify-between
+          bg-ora-canvas/92 backdrop-blur-sm flex-shrink-0 z-30">
           <div className="flex items-center gap-3 min-w-0">
             <button
               onClick={() => setIsSidebarOpen(true)}
-              className="text-slate-600 hover:bg-slate-100 p-2 rounded-xl transition-colors flex-shrink-0 md:hidden">
+              className="text-ora-secondary hover:bg-ora-subtle p-2 rounded-xl transition-colors flex-shrink-0 md:hidden">
               <Menu size={20} />
             </button>
-            <h2 className="text-sm md:text-base font-semibold text-slate-800 flex items-center gap-2 truncate min-w-0">
+            <h2 className="text-sm md:text-base font-semibold text-ora-primary flex items-center gap-2 truncate min-w-0">
               <PageTitle />
             </h2>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
             {headerActions}
             <div className="hidden sm:flex flex-col items-end">
-              <p className="text-xs font-bold text-slate-700 leading-none">{user?.name}</p>
-              <p className="text-[10px] text-slate-400 mt-0.5">{workspace?.type?.toUpperCase()}</p>
+              <p className="text-xs font-bold text-ora-primary leading-none">{user?.name}</p>
+            <p className="text-[10px] text-ora-tertiary mt-0.5">{workspace?.context === 'company' ? 'TEAM' : 'PERSONAL'}</p>
             </div>
-            <div className="w-8 h-8 rounded-full bg-indigo-50 border border-indigo-200 flex items-center justify-center text-indigo-700 text-xs font-bold flex-shrink-0">
+            <div className="w-8 h-8 rounded-full bg-ora-accent-soft border border-ora-border flex items-center justify-center text-ora-accent text-xs font-bold flex-shrink-0">
               {user?.name?.charAt(0)}
             </div>
           </div>
@@ -394,29 +439,75 @@ export const PersonalLayout: React.FC<PersonalLayoutProps> = ({
         {/* ---------------------------------------------------------------- */}
         {/* Mobile bottom navigation                                         */}
         {/* ---------------------------------------------------------------- */}
-        <nav className="md:hidden border-t border-slate-200 bg-white flex-shrink-0 safe-area-inset-bottom">
+        <nav className="md:hidden border-t border-ora-border bg-ora-surface flex-shrink-0 safe-area-inset-bottom">
           <div className="flex items-center justify-around px-2 py-2">
             {BOTTOM_NAV.map(({ id, icon: Icon, label }) => (
               <button
                 key={id}
-                onClick={() => onTabChange(id)}
+                onClick={() => {
+                  onTabChange(id);
+                }}
                 className={`flex flex-col items-center gap-1 px-3 py-2 rounded-xl transition-all min-w-0 flex-1
-                  ${activeTab === id ? 'text-indigo-600' : 'text-slate-400'}`}>
+                  ${activeTab === id ? 'text-ora-accent' : 'text-ora-tertiary'}`}>
                 <Icon size={20} strokeWidth={activeTab === id ? 2.5 : 1.5} />
                 <span className="text-[10px] font-medium leading-none">{label}</span>
               </button>
             ))}
-            {/* Initiatives shortcut */}
             <button
               onClick={() => setIsSidebarOpen(true)}
               className={`flex flex-col items-center gap-1 px-3 py-2 rounded-xl transition-all min-w-0 flex-1
-                ${['company', 'project'].includes(activeTab) ? 'text-indigo-600' : 'text-slate-400'}`}>
+                ${['company', 'project'].includes(activeTab) ? 'text-ora-accent' : 'text-ora-tertiary'}`}>
               <FolderOpen size={20} strokeWidth={['company', 'project'].includes(activeTab) ? 2.5 : 1.5} />
               <span className="text-[10px] font-medium leading-none">Projects</span>
             </button>
           </div>
         </nav>
       </main>
+      {isNewOpen && (
+        <div className="fixed inset-0 z-[70] flex items-start justify-center bg-slate-950/40 px-4 pt-20 backdrop-blur-sm" onClick={() => setIsNewOpen(false)}>
+          <div className="w-full max-w-xl rounded-2xl bg-ora-surface p-4 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-2">
+              <Command size={18} className="text-ora-accent" />
+              <h2 className="text-sm font-semibold text-ora-primary">What do you want to create or accomplish?</h2>
+            </div>
+            <div className="mt-4 flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 focus-within:border-indigo-400">
+              <input
+                autoFocus
+                value={newIntent}
+                onChange={e => setNewIntent(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') submitIntent(newIntent);
+                  if (e.key === 'Escape') setIsNewOpen(false);
+                }}
+                placeholder="Launch my MVP, plan my week, deliver a client redesign..."
+                className="min-w-0 flex-1 border-0 py-2 text-sm outline-none"
+              />
+              <button
+                onClick={() => submitIntent(newIntent)}
+                className="rounded-md bg-ora-accent px-3 py-2 text-sm font-medium text-white hover:bg-ora-accent-hover">
+                Ask Ora
+              </button>
+            </div>
+            <div className="mt-4 grid gap-2 sm:grid-cols-2">
+              {[
+                'Launch a product',
+                'Plan my week',
+                'Deliver a client project',
+                'Build a portfolio',
+                'Prepare for an exam',
+                'Find a job',
+              ].map(prompt => (
+                <button
+                  key={prompt}
+                  onClick={() => submitIntent(prompt)}
+                  className="rounded-lg border border-ora-border px-3 py-2 text-left text-sm text-ora-secondary hover:border-ora-accent/30 hover:bg-ora-accent-soft">
+                  {prompt}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

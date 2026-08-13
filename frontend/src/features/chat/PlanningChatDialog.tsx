@@ -87,7 +87,7 @@ export const PlanningChatDialog: React.FC<PlanningChatDialogProps> = ({
   const {
     activeSession, messages, isSending,
     startNewSession, sendMessage
-  } = useChat(workspaceId);
+  } = useChat(workspaceId, { level: 'project', projectId, label: projectName });
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -189,8 +189,8 @@ export const PlanningChatDialog: React.FC<PlanningChatDialogProps> = ({
             <Lightbulb size={14} className="text-amber-600 mt-0.5 flex-shrink-0" />
             <p className="text-[11px] text-amber-800 leading-relaxed">
               <span className="font-semibold">Multi-discussion planning:</span> The AI will ask questions,
-              generate a draft plan, then refine it based on your feedback.
-              Say <span className="font-semibold">"confirm"</span> when you're happy — it will create all tasks automatically.
+              generate a structured proposal, then refine it based on your feedback.
+              Review the plan card before applying it to real project tasks.
             </p>
           </div>
         </div>

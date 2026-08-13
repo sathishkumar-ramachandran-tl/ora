@@ -1,5 +1,6 @@
 import { apiClient } from './client';
 import { CalendarEvent, Task } from '../types';
+import { ScheduleProposal } from './chat';
 
 export const getEvents = async (
   workspaceId: string, start?: Date, end?: Date, scope?: CalendarEvent['scope'],
@@ -25,6 +26,9 @@ export const createEvent = async (workspaceId: string, event: Partial<CalendarEv
     recurrenceRule: event.recurrenceRule,
     attendees: event.attendees,
     organizationId: event.organizationId,
+    isFlexible: (event as any).isFlexible,
+    locked: (event as any).locked,
+    sessionStatus: (event as any).sessionStatus,
   });
   return res.data;
 };
@@ -89,5 +93,42 @@ export const autoScheduleTasks = async (
   workspaceId: string, constraints: AutoScheduleConstraints = {}
 ): Promise<AutoScheduleResult> => {
   const res = await apiClient.post(`/workspaces/${workspaceId}/auto-schedule`, constraints);
+  return res.data;
+};
+
+export const createScheduleProposal = async (
+  workspaceId: string,
+  payload: {
+    taskIds?: string[];
+    projectId?: string;
+    windowStart?: string;
+    windowEnd?: string;
+    constraints?: Array<Record<string, unknown>>;
+    timezone?: string;
+    dayStartHour?: number;
+    dayEndHour?: number;
+    weekdaysOnly?: boolean;
+    title?: string;
+  }
+): Promise<ScheduleProposal> => {
+  const res = await apiClient.post(`/workspaces/${workspaceId}/schedule-proposals`, payload);
+  return res.data;
+};
+
+export const applyScheduleProposal = async (proposalId: string): Promise<ScheduleProposal> => {
+  const res = await apiClient.post(`/schedule-proposals/${proposalId}/apply`, { approved: true });
+  return res.data;
+};
+
+export const reviseScheduleProposal = async (
+  proposalId: string,
+  payload: { unavailableWeekdays?: Array<string | number>; fixedEventIds?: string[]; reason?: string }
+): Promise<ScheduleProposal> => {
+  const res = await apiClient.post(`/schedule-proposals/${proposalId}/revise`, payload);
+  return res.data;
+};
+
+export const completeCalendarSession = async (eventId: string): Promise<CalendarEvent> => {
+  const res = await apiClient.post(`/events/${eventId}/complete-session`, {});
   return res.data;
 };

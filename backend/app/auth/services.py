@@ -1,5 +1,5 @@
-import random
 import logging
+import secrets
 from datetime import datetime, timedelta
 
 from flask import current_app
@@ -37,7 +37,7 @@ def register_user(email: str, password: str, name: str | None = None):
 def _issue_verification_code(user: User) -> str:
     # A fresh registration/resend invalidates any prior outstanding code.
     EmailVerificationToken.query.filter_by(user_id=user.id).delete()
-    code = f"{random.randint(100000, 999999)}"
+    code = f"{secrets.randbelow(900000) + 100000}"
     token = EmailVerificationToken(
         user_id=user.id,
         code=code,

@@ -13,6 +13,9 @@ from typing import Optional
 from langchain_core.tools import tool
 
 from ..tools import task_tools, calendar_tools, module_tools
+from ..calendar.service import CalendarService, serialize_event
+from .action_executor import execute_action
+from .execution_context import get_execution_context
 
 
 def _unwrap(result: dict):
@@ -21,6 +24,43 @@ def _unwrap(result: dict):
     if result["success"]:
         return result["data"]
     return {"error": result["error"]}
+
+
+def _ctx():
+    return get_execution_context(required=False)
+
+
+def _trusted_workspace(fallback: str = "") -> str:
+    ctx = _ctx()
+    return ctx.workspace_id if ctx else fallback
+
+
+def _trusted_user(fallback: str = "") -> str:
+    ctx = _ctx()
+    return ctx.user_id if ctx else fallback
+
+
+def _serialize_task_for_undo(task_id: str) -> dict:
+    from .. import models
+    task = models.Task.query.get(task_id)
+    if not task:
+        return {}
+    return {
+        "id": task.id,
+        "title": task.title,
+        "description": task.description,
+        "status": task.status,
+        "priority": task.priority,
+        "estimated_hours": task.estimated_hours,
+        "is_daily_focus": task.is_daily_focus,
+        "assignee_id": task.assignee_id,
+    }
+
+
+def _execute(action_type: str, tool_name: str, args: dict, invoke):
+    if _ctx() is None:
+        return invoke()
+    return execute_action(action_type, tool_name, args, invoke)
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +132,16 @@ def create_task(
     status must be one of: backlog, todo, in-progress, review, done.
     Returns the created task id.
     """
-    return _unwrap(task_tools.create_task(project_id, workspace_id, title, description, priority, estimated_hours, status))
+    trusted_workspace = _trusted_workspace(workspace_id)
+    args = {
+        "project_id": project_id, "workspace_id": trusted_workspace, "title": title,
+        "description": description, "priority": priority,
+        "estimated_hours": estimated_hours, "status": status,
+    }
+    return _unwrap(_execute(
+        "task.create", "create_task", args,
+        lambda: task_tools.create_task(project_id, trusted_workspace, title, description, priority, estimated_hours, status),
+    ))
 
 
 @tool
@@ -103,7 +152,12 @@ def create_multiple_tasks(project_id: str, workspace_id: str, tasks: str) -> dic
     Example: '[{"title":"Setup CI","priority":"high","estimated_hours":2}]'
     Returns count of tasks created and their IDs.
     """
-    return _unwrap(task_tools.create_multiple_tasks(project_id, workspace_id, tasks))
+    trusted_workspace = _trusted_workspace(workspace_id)
+    args = {"project_id": project_id, "workspace_id": trusted_workspace, "tasks": tasks}
+    return _unwrap(_execute(
+        "task.bulk_create", "create_multiple_tasks", args,
+        lambda: task_tools.create_multiple_tasks(project_id, trusted_workspace, tasks),
+    ))
 
 
 @tool
@@ -119,7 +173,15 @@ def create_project(
     project_type: build | learning | research | client | campaign.
     Returns the new project id.
     """
-    return _unwrap(task_tools.create_project(initiative_id, workspace_id, name, project_type, mission))
+    trusted_workspace = _trusted_workspace(workspace_id)
+    args = {
+        "initiative_id": initiative_id, "workspace_id": trusted_workspace,
+        "name": name, "project_type": project_type, "mission": mission,
+    }
+    return _unwrap(_execute(
+        "project.create", "create_project", args,
+        lambda: task_tools.create_project(initiative_id, trusted_workspace, name, project_type, mission),
+    ))
 
 
 @tool
@@ -134,7 +196,12 @@ def create_initiative(
     color options: indigo, emerald, amber, rose, slate, purple, blue.
     Returns the new initiative id.
     """
-    return _unwrap(task_tools.create_initiative(workspace_id, name, mission, color))
+    trusted_workspace = _trusted_workspace(workspace_id)
+    args = {"workspace_id": trusted_workspace, "name": name, "mission": mission, "color": color}
+    return _unwrap(_execute(
+        "initiative.create", "create_initiative", args,
+        lambda: task_tools.create_initiative(trusted_workspace, name, mission, color),
+    ))
 
 
 # ---------------------------------------------------------------------------
@@ -160,8 +227,17 @@ def update_task(
     like "assign this task to <person>". Look up the user id from workspace members if you
     only have a name.
     """
-    return _unwrap(task_tools.update_task(
-        task_id, title, description, status, priority, estimated_hours, is_daily_focus, assignee_id
+    args = {
+        "task_id": task_id, "title": title, "description": description, "status": status,
+        "priority": priority, "estimated_hours": estimated_hours,
+        "is_daily_focus": is_daily_focus, "assignee_id": assignee_id,
+    }
+    return _unwrap(_execute(
+        "task.update", "update_task", args,
+        lambda: task_tools.update_task(
+            task_id, title, description, status, priority, estimated_hours, is_daily_focus, assignee_id
+        ),
+        before=lambda: _serialize_task_for_undo(task_id),
     ))
 
 
@@ -171,7 +247,12 @@ def update_task_status(task_id: str, new_status: str) -> dict:
     Move a task to a new status column.
     new_status: backlog | todo | in-progress | review | done
     """
-    return _unwrap(task_tools.update_task_status(task_id, new_status))
+    args = {"task_id": task_id, "new_status": new_status}
+    return _unwrap(_execute(
+        "task.update", "update_task_status", args,
+        lambda: task_tools.update_task_status(task_id, new_status),
+        before=lambda: _serialize_task_for_undo(task_id),
+    ))
 
 
 @tool
@@ -182,7 +263,11 @@ def update_project(
     progress: Optional[int] = None
 ) -> dict:
     """Update a project's name, mission, or progress percentage (0-100)."""
-    return _unwrap(task_tools.update_project(project_id, name, mission, progress))
+    args = {"project_id": project_id, "name": name, "mission": mission, "progress": progress}
+    return _unwrap(_execute(
+        "project.update", "update_project", args,
+        lambda: task_tools.update_project(project_id, name, mission, progress),
+    ))
 
 
 # ---------------------------------------------------------------------------
@@ -192,13 +277,15 @@ def update_project(
 @tool
 def delete_task(task_id: str) -> dict:
     """Permanently delete a task. This cannot be undone."""
-    return _unwrap(task_tools.delete_task(task_id))
+    args = {"task_id": task_id}
+    return _unwrap(_execute("task.delete", "delete_task", args, lambda: task_tools.delete_task(task_id)))
 
 
 @tool
 def delete_project(project_id: str) -> dict:
     """Permanently delete a project and all its tasks. This cannot be undone."""
-    return _unwrap(task_tools.delete_project(project_id))
+    args = {"project_id": project_id}
+    return _unwrap(_execute("project.delete", "delete_project", args, lambda: task_tools.delete_project(project_id)))
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +311,12 @@ def create_project_plan(project_id: str, workspace_id: str, plan: str) -> dict:
     The milestone name is embedded into each task's description for board context.
     Returns a summary of what was created.
     """
-    return _unwrap(task_tools.create_project_plan(project_id, workspace_id, plan))
+    trusted_workspace = _trusted_workspace(workspace_id)
+    args = {"project_id": project_id, "workspace_id": trusted_workspace, "plan": plan}
+    return _unwrap(_execute(
+        "plan.apply", "create_project_plan", args,
+        lambda: task_tools.create_project_plan(project_id, trusted_workspace, plan),
+    ))
 
 
 @tool
@@ -243,7 +335,12 @@ def get_project_tasks(project_id: str) -> dict:
 @tool
 def create_note(workspace_id: str, content: str, project_id: Optional[str] = None) -> dict:
     """Create a note in the workspace, optionally linked to a project."""
-    return _unwrap(task_tools.create_note(workspace_id, content, project_id))
+    trusted_workspace = _trusted_workspace(workspace_id)
+    args = {"workspace_id": trusted_workspace, "content": content, "project_id": project_id}
+    return _unwrap(_execute(
+        "note.create", "create_note", args,
+        lambda: task_tools.create_note(trusted_workspace, content, project_id),
+    ))
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +355,7 @@ def list_calendar_events(workspace_id: str, user_id: str, start: str, end: str, 
     omit to see everything visible to the user).
     """
     return _unwrap(calendar_tools.list_events(
-        workspace_id, user_id, datetime.fromisoformat(start), datetime.fromisoformat(end), scope
+        _trusted_workspace(workspace_id), _trusted_user(user_id), datetime.fromisoformat(start), datetime.fromisoformat(end), scope
     ))
 
 
@@ -266,7 +363,9 @@ def list_calendar_events(workspace_id: str, user_id: str, start: str, end: str, 
 def create_calendar_event(
     workspace_id: str, owner_id: str, title: str, start: str, end: str,
     event_type: str = "personal", scope: str = "personal", color: str = "blue",
-    timezone: str = "UTC", recurrence_rule: Optional[str] = None, attendees: Optional[list] = None
+    timezone: str = "UTC", recurrence_rule: Optional[str] = None, attendees: Optional[list] = None,
+    task_id: Optional[str] = None, is_flexible: bool = True, locked: bool = False,
+    allow_overlap: bool = False,
 ) -> dict:
     """
     Create a calendar event. start/end are ISO 8601 datetimes.
@@ -275,30 +374,80 @@ def create_calendar_event(
     recurrence_rule: RFC5545 RRULE text, e.g. 'FREQ=WEEKLY;BYDAY=MO,WE,FR' (optional).
     attendees: user IDs, beyond the owner, who can see this event (optional).
     """
-    return _unwrap(calendar_tools.create_event(
-        workspace_id, owner_id, title, datetime.fromisoformat(start), datetime.fromisoformat(end),
-        event_type, scope, None, color, timezone, recurrence_rule, attendees
+    trusted_workspace = _trusted_workspace(workspace_id)
+    trusted_user = _trusted_user(owner_id)
+    args = {
+        "workspace_id": trusted_workspace, "owner_id": trusted_user, "title": title,
+        "start": start, "end": end, "event_type": event_type, "scope": scope,
+        "color": color, "timezone": timezone, "recurrence_rule": recurrence_rule,
+        "attendees": attendees, "task_id": task_id, "is_flexible": is_flexible,
+        "locked": locked, "allow_overlap": allow_overlap,
+    }
+    return _unwrap(_execute(
+        "calendar.event.create", "create_calendar_event", args,
+        lambda: CalendarService().create_event(
+            get_execution_context(required=True),
+            {
+                "title": title,
+                "start": datetime.fromisoformat(start),
+                "end": datetime.fromisoformat(end),
+                "event_type": event_type,
+                "scope": scope,
+                "task_id": task_id,
+                "color": color,
+                "timezone": timezone,
+                "recurrence_rule": recurrence_rule,
+                "attendees": attendees,
+                "is_flexible": is_flexible,
+                "locked": locked,
+                "session_status": "SCHEDULED",
+            },
+            allow_overlap=allow_overlap,
+        ),
     ))
 
 
 @tool
 def update_calendar_event(
     event_id: str, title: Optional[str] = None, start: Optional[str] = None,
-    end: Optional[str] = None, color: Optional[str] = None, scope: Optional[str] = None
+    end: Optional[str] = None, color: Optional[str] = None, scope: Optional[str] = None,
+    locked: Optional[bool] = None, is_flexible: Optional[bool] = None, allow_overlap: bool = False,
 ) -> dict:
     """Update fields of an existing calendar event. Only pass fields you want to change."""
-    return _unwrap(calendar_tools.update_event(
-        event_id, title,
-        datetime.fromisoformat(start) if start else None,
-        datetime.fromisoformat(end) if end else None,
-        color, scope
+    args = {
+        "event_id": event_id, "title": title, "start": start, "end": end, "color": color, "scope": scope,
+        "locked": locked, "is_flexible": is_flexible, "allow_overlap": allow_overlap,
+    }
+    return _unwrap(_execute(
+        "calendar.event.update", "update_calendar_event", args,
+        lambda: CalendarService().update_event(
+            get_execution_context(required=True),
+            event_id,
+            {
+                key: value for key, value in {
+                    "title": title,
+                    "start": datetime.fromisoformat(start) if start else None,
+                    "end": datetime.fromisoformat(end) if end else None,
+                    "color": color,
+                    "scope": scope,
+                    "locked": locked,
+                    "is_flexible": is_flexible,
+                }.items() if value is not None
+            },
+            allow_overlap=allow_overlap,
+        ),
+        before=lambda: serialize_event(calendar_tools.require_calendar_event_access(get_execution_context(required=True), event_id)[0]),
     ))
 
 
 @tool
 def delete_calendar_event(event_id: str, delete_series: bool = False) -> dict:
     """Permanently delete a calendar event. This cannot be undone. Set delete_series=true to delete the whole recurring series."""
-    return _unwrap(calendar_tools.delete_event(event_id, delete_series))
+    args = {"event_id": event_id, "delete_series": delete_series}
+    return _unwrap(_execute(
+        "calendar.event.delete", "delete_calendar_event", args,
+        lambda: calendar_tools.delete_event(event_id, delete_series),
+    ))
 
 
 @tool
@@ -311,8 +460,13 @@ def find_availability(
     scheduling a meeting or focus block instead of guessing a free time. Returns up
     to 10 candidate slots.
     """
+    trusted_workspace = _trusted_workspace(workspace_id)
+    trusted_user = _trusted_user(attendee_user_ids[0] if attendee_user_ids else "")
+    trusted_attendees = attendee_user_ids or [trusted_user]
+    if trusted_user and trusted_user not in trusted_attendees:
+        trusted_attendees = [trusted_user, *trusted_attendees]
     return _unwrap(calendar_tools.find_availability(
-        workspace_id, attendee_user_ids, duration_minutes,
+        trusted_workspace, trusted_attendees, duration_minutes,
         datetime.fromisoformat(window_start), datetime.fromisoformat(window_end),
         day_start_hour, day_end_hour
     ))
@@ -331,10 +485,21 @@ def auto_schedule_tasks(
     priority first. target_end_date (ISO date) caps how far out it will look; defaults to
     14 days out.
     """
-    return _unwrap(calendar_tools.auto_schedule_tasks(
-        workspace_id, user_id, task_ids=task_ids,
-        day_start_hour=day_start_hour, day_end_hour=day_end_hour, weekdays_only=weekdays_only,
-        window_end=target_end_date, block_hours=block_hours,
+    trusted_workspace = _trusted_workspace(workspace_id)
+    trusted_user = _trusted_user(user_id)
+    args = {
+        "workspace_id": trusted_workspace, "user_id": trusted_user, "task_ids": task_ids,
+        "day_start_hour": day_start_hour, "day_end_hour": day_end_hour,
+        "weekdays_only": weekdays_only, "target_end_date": target_end_date,
+        "block_hours": block_hours,
+    }
+    return _unwrap(_execute(
+        "calendar.auto_schedule", "auto_schedule_tasks", args,
+        lambda: calendar_tools.auto_schedule_tasks(
+            trusted_workspace, trusted_user, task_ids=task_ids,
+            day_start_hour=day_start_hour, day_end_hour=day_end_hour, weekdays_only=weekdays_only,
+            window_end=target_end_date, block_hours=block_hours,
+        ),
     ))
 
 
@@ -345,7 +510,47 @@ def schedule_module_milestones(module_instance_id: str, workspace_id: str, user_
     placed via find_availability so they land in genuinely free time near each milestone's
     due date.
     """
-    return _unwrap(calendar_tools.schedule_module_milestones(module_instance_id, workspace_id, user_id, block_hours))
+    trusted_workspace = _trusted_workspace(workspace_id)
+    trusted_user = _trusted_user(user_id)
+    args = {
+        "module_instance_id": module_instance_id, "workspace_id": trusted_workspace,
+        "user_id": trusted_user, "block_hours": block_hours,
+    }
+    return _unwrap(_execute(
+        "calendar.schedule_module_milestones", "schedule_module_milestones", args,
+        lambda: calendar_tools.schedule_module_milestones(module_instance_id, trusted_workspace, trusted_user, block_hours),
+    ))
+
+
+@tool
+def propose_schedule(
+    workspace_id: str,
+    task_ids: Optional[list] = None,
+    project_id: Optional[str] = None,
+    window_start: Optional[str] = None,
+    window_end: Optional[str] = None,
+    day_start_hour: int = 9,
+    day_end_hour: int = 18,
+    weekdays_only: bool = True,
+) -> dict:
+    """
+    Create a ScheduleProposal for task work in a real calendar window. This does not
+    mutate the calendar; the user must apply the proposal.
+    """
+    from .scheduling import create_schedule_proposal, serialize_schedule
+    ctx = get_execution_context(required=True)
+    proposal = create_schedule_proposal(
+        ctx,
+        task_ids=task_ids,
+        project_id=project_id,
+        window_start=datetime.fromisoformat(window_start) if window_start else None,
+        window_end=datetime.fromisoformat(window_end) if window_end else None,
+        day_start_hour=day_start_hour,
+        day_end_hour=day_end_hour,
+        weekdays_only=weekdays_only,
+        title="Scheduled work proposal",
+    )
+    return serialize_schedule(proposal)
 
 
 # ---------------------------------------------------------------------------
@@ -410,7 +615,11 @@ def list_milestones(project_id: str) -> dict:
 @tool
 def create_milestone(project_id: str, title: str, description: str = "", due_date: Optional[str] = None, order: int = 0) -> dict:
     """Create a milestone under a project. due_date is an ISO 8601 date/datetime string (optional)."""
-    return _unwrap(task_tools.create_milestone(project_id, title, description, due_date, order))
+    args = {"project_id": project_id, "title": title, "description": description, "due_date": due_date, "order": order}
+    return _unwrap(_execute(
+        "milestone.create", "create_milestone", args,
+        lambda: task_tools.create_milestone(project_id, title, description, due_date, order),
+    ))
 
 
 @tool
@@ -419,13 +628,24 @@ def update_milestone(
     due_date: Optional[str] = None, status: Optional[str] = None, order: Optional[int] = None
 ) -> dict:
     """Update a milestone. status: pending | in_progress | done. Only pass fields you want to change."""
-    return _unwrap(task_tools.update_milestone(milestone_id, title, description, due_date, status, order))
+    args = {
+        "milestone_id": milestone_id, "title": title, "description": description,
+        "due_date": due_date, "status": status, "order": order,
+    }
+    return _unwrap(_execute(
+        "milestone.update", "update_milestone", args,
+        lambda: task_tools.update_milestone(milestone_id, title, description, due_date, status, order),
+    ))
 
 
 @tool
 def delete_milestone(milestone_id: str) -> dict:
     """Delete a milestone. Tasks linked to it are unlinked (not deleted)."""
-    return _unwrap(task_tools.delete_milestone(milestone_id))
+    args = {"milestone_id": milestone_id}
+    return _unwrap(_execute(
+        "milestone.delete", "delete_milestone", args,
+        lambda: task_tools.delete_milestone(milestone_id),
+    ))
 
 
 @tool
@@ -437,7 +657,11 @@ def list_sprints(project_id: str) -> dict:
 @tool
 def create_sprint(project_id: str, name: str, start_date: Optional[str] = None, end_date: Optional[str] = None, status: str = "planned") -> dict:
     """Create a sprint under a project. status: planned | active | completed."""
-    return _unwrap(task_tools.create_sprint(project_id, name, start_date, end_date, status))
+    args = {"project_id": project_id, "name": name, "start_date": start_date, "end_date": end_date, "status": status}
+    return _unwrap(_execute(
+        "sprint.create", "create_sprint", args,
+        lambda: task_tools.create_sprint(project_id, name, start_date, end_date, status),
+    ))
 
 
 @tool
@@ -446,13 +670,21 @@ def update_sprint(
     end_date: Optional[str] = None, status: Optional[str] = None
 ) -> dict:
     """Update a sprint. status: planned | active | completed. Only pass fields you want to change."""
-    return _unwrap(task_tools.update_sprint(sprint_id, name, start_date, end_date, status))
+    args = {"sprint_id": sprint_id, "name": name, "start_date": start_date, "end_date": end_date, "status": status}
+    return _unwrap(_execute(
+        "sprint.update", "update_sprint", args,
+        lambda: task_tools.update_sprint(sprint_id, name, start_date, end_date, status),
+    ))
 
 
 @tool
 def delete_sprint(sprint_id: str) -> dict:
     """Delete a sprint. Tasks linked to it are unlinked (not deleted)."""
-    return _unwrap(task_tools.delete_sprint(sprint_id))
+    args = {"sprint_id": sprint_id}
+    return _unwrap(_execute(
+        "sprint.delete", "delete_sprint", args,
+        lambda: task_tools.delete_sprint(sprint_id),
+    ))
 
 
 @tool
@@ -462,13 +694,21 @@ def add_task_dependency(task_id: str, depends_on_task_id: str, dependency_type: 
     other task is done). Rejected if it would create a dependency cycle.
     dependency_type: blocks | blocked_by | relates_to.
     """
-    return _unwrap(task_tools.add_task_dependency(task_id, depends_on_task_id, dependency_type))
+    args = {"task_id": task_id, "depends_on_task_id": depends_on_task_id, "dependency_type": dependency_type}
+    return _unwrap(_execute(
+        "task_dependency.create", "add_task_dependency", args,
+        lambda: task_tools.add_task_dependency(task_id, depends_on_task_id, dependency_type),
+    ))
 
 
 @tool
 def remove_task_dependency(dependency_id: str) -> dict:
     """Remove a task dependency link."""
-    return _unwrap(task_tools.remove_task_dependency(dependency_id))
+    args = {"dependency_id": dependency_id}
+    return _unwrap(_execute(
+        "task_dependency.delete", "remove_task_dependency", args,
+        lambda: task_tools.remove_task_dependency(dependency_id),
+    ))
 
 
 @tool
@@ -504,6 +744,7 @@ PLANNING_TOOLS = [
 CALENDAR_TOOLS = [
     list_calendar_events, create_calendar_event, update_calendar_event,
     delete_calendar_event, find_availability, auto_schedule_tasks, schedule_module_milestones,
+    propose_schedule,
 ]
 
 MODULE_TOOLS = [list_modules, generate_module, get_module_progress, install_module]

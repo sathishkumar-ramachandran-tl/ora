@@ -8,6 +8,7 @@ interface AuthContextType {
     workspace: Workspace | null;
     workspaces: Workspace[];
     isLoading: boolean;
+    bootstrapStatus: 'checking_session' | 'loading_profile' | 'loading_workspaces' | 'ready' | 'signed_out';
     login: (token: string, user: User) => Promise<void>;
     logout: () => void;
     refreshUser: () => Promise<void>;
@@ -25,6 +26,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const [workspace, setWorkspaceState] = useState<Workspace | null>(null);
     const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
     const [isLoading, setIsLoading] = useState(true);
+    const [bootstrapStatus, setBootstrapStatus] = useState<AuthContextType['bootstrapStatus']>('checking_session');
 
     const loadWorkspaces = useCallback(async (userId: string): Promise<Workspace[]> => {
         const list = await getUserWorkspaces(userId);
@@ -37,40 +39,54 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         localStorage.setItem(ACTIVE_WS_KEY, ws.id);
     }, []);
 
+    const chooseWorkspace = useCallback((list: Workspace[]) => {
+        if (list.length === 0) return null;
+        const savedId = localStorage.getItem(ACTIVE_WS_KEY);
+        const saved = savedId ? list.find(w => w.id === savedId) : null;
+        return saved || list.find(w => w.context === 'personal') || list[0];
+    }, []);
+
     const switchWorkspace = useCallback((workspaceId: string) => {
         const target = workspaces.find(w => w.id === workspaceId);
         if (target) {
             setWorkspace(target);
-            // Full reload so all data re-fetches with new workspace context
-            window.location.reload();
+            window.dispatchEvent(new CustomEvent('ora:workspace-switched', {
+                detail: { workspaceId: target.id, context: target.context }
+            }));
         }
     }, [workspaces, setWorkspace]);
 
     const refreshWorkspaces = useCallback(async () => {
         if (!user) return;
         const list = await loadWorkspaces(user.id);
-        // Keep current workspace if still valid, else switch to first
+        // Keep current workspace if still valid, else fall back deterministically.
         if (workspace && !list.find(w => w.id === workspace.id)) {
-            if (list.length > 0) setWorkspace(list[0]);
+            const fallback = chooseWorkspace(list);
+            if (fallback) setWorkspace(fallback);
+            else setWorkspaceState(null);
         }
-    }, [user, workspace, loadWorkspaces, setWorkspace]);
+    }, [user, workspace, loadWorkspaces, setWorkspace, chooseWorkspace]);
 
     useEffect(() => {
         const restoreSession = async () => {
             const token = localStorage.getItem('ora_auth_token');
             const userId = localStorage.getItem('ora_user_id');
-            if (!token || !userId) { setIsLoading(false); return; }
+            if (!token || !userId) {
+                setBootstrapStatus('signed_out');
+                setIsLoading(false);
+                return;
+            }
 
             try {
+                setBootstrapStatus('loading_profile');
                 const currentUser = await getCurrentUser();
-                setUser(currentUser);
-
+                setBootstrapStatus('loading_workspaces');
                 const list = await loadWorkspaces(currentUser.id);
-                if (list.length > 0) {
-                    const savedId = localStorage.getItem(ACTIVE_WS_KEY);
-                    const active = (savedId && list.find(w => w.id === savedId)) || list[0];
-                    setWorkspaceState(active);
-                }
+                const active = chooseWorkspace(list);
+                setUser(currentUser);
+                setWorkspaceState(active);
+                if (active) localStorage.setItem(ACTIVE_WS_KEY, active.id);
+                setBootstrapStatus('ready');
             } catch {
                 logout();
             } finally {
@@ -81,14 +97,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }, []);
 
     const login = async (token: string, user: User) => {
+        setIsLoading(true);
+        setBootstrapStatus('loading_profile');
         localStorage.setItem('ora_auth_token', token);
         localStorage.setItem('ora_user_id', user.id);
-        setUser(user);
-        const list = await loadWorkspaces(user.id);
-        if (list.length > 0) {
-            const savedId = localStorage.getItem(ACTIVE_WS_KEY);
-            const active = (savedId && list.find(w => w.id === savedId)) || list[0];
+        try {
+            const currentUser = await getCurrentUser();
+            setBootstrapStatus('loading_workspaces');
+            const list = await loadWorkspaces(currentUser.id);
+            const active = chooseWorkspace(list);
+            setUser(currentUser);
             setWorkspaceState(active);
+            if (active) localStorage.setItem(ACTIVE_WS_KEY, active.id);
+            setBootstrapStatus('ready');
+        } finally {
+            setIsLoading(false);
         }
     };
 
@@ -104,11 +127,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setUser(null);
         setWorkspaceState(null);
         setWorkspaces([]);
+        setBootstrapStatus('signed_out');
+        setIsLoading(false);
     };
 
     return (
         <AuthContext.Provider value={{
-            user, workspace, workspaces, isLoading,
+            user, workspace, workspaces, isLoading, bootstrapStatus,
             login, logout, refreshUser, setWorkspace, switchWorkspace, refreshWorkspaces
         }}>
             {children}

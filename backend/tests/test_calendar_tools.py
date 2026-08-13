@@ -37,6 +37,83 @@ def test_create_and_list_events_within_window(app, db):
         assert listed["data"][0]["isRecurringOccurrence"] is False
 
 
+def test_create_event_validates_required_domain_invariants(app, db):
+    with app.app_context():
+        owner = _make_user("cal-u-validation", "cal-validation@example.com")
+        ws = Workspace(id="cal-ws-validation", name="WS validation", context="personal", owner_id=owner.id)
+        db.session.add(ws)
+        db.session.commit()
+
+        result = calendar_tools.create_event(
+            ws.id, owner.id, "Broken block",
+            datetime(2026, 8, 10, 10, 0), datetime(2026, 8, 10, 9, 0),
+        )
+        assert not result["success"]
+        assert "after start" in result["error"]
+
+        result = calendar_tools.create_event(
+            ws.id, owner.id, "Bad scope",
+            datetime(2026, 8, 10, 9, 0), datetime(2026, 8, 10, 10, 0),
+            scope="public",
+        )
+        assert not result["success"]
+        assert "Invalid event scope" in result["error"]
+
+
+def test_create_event_is_idempotent_for_identical_request(app, db):
+    with app.app_context():
+        owner = _make_user("cal-u-idempotent", "cal-idempotent@example.com")
+        ws = Workspace(id="cal-ws-idempotent", name="WS idempotent", context="personal", owner_id=owner.id)
+        db.session.add(ws)
+        db.session.commit()
+
+        start = datetime(2026, 8, 10, 9, 0)
+        end = datetime(2026, 8, 10, 10, 0)
+        first = calendar_tools.create_event(ws.id, owner.id, "Study block", start, end)
+        second = calendar_tools.create_event(ws.id, owner.id, "Study block", start, end)
+
+        assert first["success"], first["error"]
+        assert second["success"], second["error"]
+        assert second["data"]["status"] == "already_exists"
+        assert second["data"]["id"] == first["data"]["id"]
+
+        from app.calendar.models import CalendarEvent
+        assert CalendarEvent.query.filter_by(workspace_id=ws.id, title="Study block").count() == 1
+
+
+def test_update_event_rejects_invalid_window(app, db):
+    with app.app_context():
+        owner = _make_user("cal-u-update", "cal-update@example.com")
+        ws = Workspace(id="cal-ws-update", name="WS update", context="personal", owner_id=owner.id)
+        db.session.add(ws)
+        db.session.commit()
+
+        created = calendar_tools.create_event(
+            ws.id, owner.id, "Update me",
+            datetime(2026, 8, 10, 9, 0), datetime(2026, 8, 10, 10, 0),
+        )
+        result = calendar_tools.update_event(created["data"]["id"], end=datetime(2026, 8, 10, 8, 0))
+        assert not result["success"]
+        assert "after start" in result["error"]
+
+
+def test_delete_event_returns_verified_operation_state(app, db):
+    with app.app_context():
+        owner = _make_user("cal-u-delete", "cal-delete@example.com")
+        ws = Workspace(id="cal-ws-delete", name="WS delete", context="personal", owner_id=owner.id)
+        db.session.add(ws)
+        db.session.commit()
+
+        created = calendar_tools.create_event(
+            ws.id, owner.id, "Delete me",
+            datetime(2026, 8, 10, 9, 0), datetime(2026, 8, 10, 10, 0),
+        )
+        result = calendar_tools.delete_event(created["data"]["id"])
+        assert result["success"], result["error"]
+        assert result["data"]["operationStatus"] == "succeeded"
+        assert result["data"]["verified"] is True
+
+
 def test_recurrence_expands_multiple_occurrences_in_window():
     """rrule expansion is pure-python (no DB), test the helper directly."""
     class FakeEvent:

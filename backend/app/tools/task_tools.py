@@ -29,6 +29,73 @@ def _fail(error: str) -> dict:
     return {"success": False, "data": None, "error": error}
 
 
+def _ctx():
+    try:
+        from ..agents.execution_context import get_execution_context
+        return get_execution_context(required=False)
+    except Exception:
+        return None
+
+
+def require_workspace_access(ctx, workspace_id: str) -> Optional[str]:
+    if ctx is None:
+        return None
+    if workspace_id != ctx.workspace_id:
+        return "Unauthorized: resource is outside the trusted workspace"
+    from ..core.authz import user_can_access_workspace
+    if not user_can_access_workspace(ctx.user_id, workspace_id):
+        return "Unauthorized: user cannot access this workspace"
+    return None
+
+
+def require_project_access(ctx, project_id: str) -> tuple[Optional[object], Optional[str]]:
+    db = _get_db()
+    m = _get_models()
+    project = db.session.get(m.Project, project_id)
+    if not project:
+        return None, f"Project {project_id} not found"
+    error = require_workspace_access(ctx, project.workspace_id)
+    if error:
+        return None, error
+    return project, None
+
+
+def require_task_access(ctx, task_id: str) -> tuple[Optional[object], Optional[str]]:
+    db = _get_db()
+    m = _get_models()
+    task = db.session.get(m.Task, task_id)
+    if not task:
+        return None, f"Task {task_id} not found"
+    error = require_workspace_access(ctx, task.workspace_id)
+    if error:
+        return None, error
+    return task, None
+
+
+def require_milestone_access(ctx, milestone_id: str) -> tuple[Optional[object], Optional[str]]:
+    db = _get_db()
+    m = _get_models()
+    milestone = db.session.get(m.Milestone, milestone_id)
+    if not milestone:
+        return None, f"Milestone {milestone_id} not found"
+    _, error = require_project_access(ctx, milestone.project_id)
+    if error:
+        return None, error
+    return milestone, None
+
+
+def require_sprint_access(ctx, sprint_id: str) -> tuple[Optional[object], Optional[str]]:
+    db = _get_db()
+    m = _get_models()
+    sprint = db.session.get(m.Sprint, sprint_id)
+    if not sprint:
+        return None, f"Sprint {sprint_id} not found"
+    _, error = require_project_access(ctx, sprint.project_id)
+    if error:
+        return None, error
+    return sprint, None
+
+
 # ---------------------------------------------------------------------------
 # READ / QUERY
 # ---------------------------------------------------------------------------
@@ -36,6 +103,10 @@ def _fail(error: str) -> dict:
 def get_workspace_summary(workspace_id: str) -> dict:
     db = _get_db()
     m = _get_models()
+
+    error = require_workspace_access(_ctx(), workspace_id)
+    if error:
+        return _fail(error)
 
     workspace = db.session.get(m.Workspace, workspace_id)
     if not workspace:
@@ -89,6 +160,10 @@ def list_workspace_members(workspace_id: str) -> dict:
     db = _get_db()
     m = _get_models()
 
+    error = require_workspace_access(_ctx(), workspace_id)
+    if error:
+        return _fail(error)
+
     if not db.session.get(m.Workspace, workspace_id):
         return _fail(f"Workspace {workspace_id} not found")
 
@@ -106,6 +181,17 @@ def list_workspace_members(workspace_id: str) -> dict:
 def get_tasks(workspace_id: str, project_id: Optional[str] = None,
               status: Optional[str] = None, priority: Optional[str] = None) -> dict:
     m = _get_models()
+    ctx = _ctx()
+
+    error = require_workspace_access(ctx, workspace_id)
+    if error:
+        return _fail(error)
+    if project_id:
+        project, error = require_project_access(ctx, project_id)
+        if error:
+            return _fail(error)
+        if project.workspace_id != workspace_id:
+            return _fail("Project is outside the requested workspace")
 
     q = m.Task.query.filter_by(workspace_id=workspace_id)
     if project_id:
@@ -130,6 +216,10 @@ def get_tasks(workspace_id: str, project_id: Optional[str] = None,
 
 def analyze_workspace_progress(workspace_id: str) -> dict:
     m = _get_models()
+
+    error = require_workspace_access(_ctx(), workspace_id)
+    if error:
+        return _fail(error)
 
     companies = m.Company.query.filter_by(workspace_id=workspace_id).all()
     analysis = {
@@ -184,6 +274,10 @@ def analyze_workspace_progress(workspace_id: str) -> dict:
 def get_projects(workspace_id: str) -> dict:
     m = _get_models()
 
+    error = require_workspace_access(_ctx(), workspace_id)
+    if error:
+        return _fail(error)
+
     companies = m.Company.query.filter_by(workspace_id=workspace_id).all()
     projects = []
     for c in companies:
@@ -204,9 +298,9 @@ def get_project_tasks(project_id: str) -> dict:
     db = _get_db()
     m = _get_models()
 
-    project = db.session.get(m.Project, project_id)
-    if not project:
-        return _fail(f"Project {project_id} not found")
+    project, error = require_project_access(_ctx(), project_id)
+    if error:
+        return _fail(error)
 
     tasks = m.Task.query.filter_by(project_id=project_id).all()
     by_status: dict = {}
@@ -241,12 +335,24 @@ def create_task(
 ) -> dict:
     db = _get_db()
     m = _get_models()
+    ctx = _ctx()
+
+    project, error = require_project_access(ctx, project_id)
+    if error:
+        return _fail(error)
+    if project.workspace_id != workspace_id:
+        return _fail("Project is outside the requested workspace")
+    error = require_workspace_access(ctx, workspace_id)
+    if error:
+        return _fail(error)
+    if not title or not str(title).strip():
+        return _fail("Task title is required")
 
     task = m.Task(
         id=str(uuid.uuid4()),
         project_id=project_id,
         workspace_id=workspace_id,
-        title=title,
+        title=str(title).strip(),
         description=description,
         priority=priority,
         estimated_hours=estimated_hours,
@@ -262,6 +368,16 @@ def create_task(
 def create_multiple_tasks(project_id: str, workspace_id: str, tasks: str) -> dict:
     db = _get_db()
     m = _get_models()
+    ctx = _ctx()
+
+    project, error = require_project_access(ctx, project_id)
+    if error:
+        return _fail(error)
+    if project.workspace_id != workspace_id:
+        return _fail("Project is outside the requested workspace")
+    error = require_workspace_access(ctx, workspace_id)
+    if error:
+        return _fail(error)
 
     try:
         task_list = json.loads(tasks)
@@ -270,11 +386,15 @@ def create_multiple_tasks(project_id: str, workspace_id: str, tasks: str) -> dic
 
     created = []
     for td in task_list:
+        if not isinstance(td, dict):
+            return _fail("Each task must be an object")
+        if not td.get("title"):
+            return _fail("Each task requires a title")
         task = m.Task(
             id=str(uuid.uuid4()),
             project_id=project_id,
             workspace_id=workspace_id,
-            title=td.get("title", "Untitled Task"),
+            title=str(td.get("title")).strip(),
             description=td.get("description", ""),
             priority=td.get("priority", "medium"),
             estimated_hours=td.get("estimated_hours", 1.0),
@@ -298,12 +418,24 @@ def create_project(
 ) -> dict:
     db = _get_db()
     m = _get_models()
+    ctx = _ctx()
+
+    error = require_workspace_access(ctx, workspace_id)
+    if error:
+        return _fail(error)
+    initiative = db.session.get(m.Company, initiative_id)
+    if not initiative:
+        return _fail(f"Initiative {initiative_id} not found")
+    if initiative.workspace_id != workspace_id:
+        return _fail("Initiative is outside the requested workspace")
+    if not name or not str(name).strip():
+        return _fail("Project name is required")
 
     project = m.Project(
         id=str(uuid.uuid4()),
         workspace_id=workspace_id,
         company_id=initiative_id,
-        name=name,
+        name=str(name).strip(),
         type=project_type,
         mission=mission,
         progress=0,
@@ -322,11 +454,18 @@ def create_initiative(
 ) -> dict:
     db = _get_db()
     m = _get_models()
+    ctx = _ctx()
+
+    error = require_workspace_access(ctx, workspace_id)
+    if error:
+        return _fail(error)
+    if not name or not str(name).strip():
+        return _fail("Initiative name is required")
 
     initiative = m.Company(
         id=str(uuid.uuid4()),
         workspace_id=workspace_id,
-        name=name,
+        name=str(name).strip(),
         mission=mission,
         color=color,
         whiteboard=[]
@@ -339,6 +478,17 @@ def create_initiative(
 def create_note(workspace_id: str, content: str, project_id: Optional[str] = None) -> dict:
     db = _get_db()
     m = _get_models()
+    ctx = _ctx()
+
+    error = require_workspace_access(ctx, workspace_id)
+    if error:
+        return _fail(error)
+    if project_id:
+        project, error = require_project_access(ctx, project_id)
+        if error:
+            return _fail(error)
+        if project.workspace_id != workspace_id:
+            return _fail("Project is outside the requested workspace")
 
     note = m.Note(
         id=str(uuid.uuid4()),
@@ -356,6 +506,16 @@ def create_note(workspace_id: str, content: str, project_id: Optional[str] = Non
 def create_project_plan(project_id: str, workspace_id: str, plan: str) -> dict:
     db = _get_db()
     m = _get_models()
+    ctx = _ctx()
+
+    project, error = require_project_access(ctx, project_id)
+    if error:
+        return _fail(error)
+    if project.workspace_id != workspace_id:
+        return _fail("Project is outside the requested workspace")
+    error = require_workspace_access(ctx, workspace_id)
+    if error:
+        return _fail(error)
 
     try:
         milestones = json.loads(plan)
@@ -435,9 +595,9 @@ def update_task(
     db = _get_db()
     m = _get_models()
 
-    task = db.session.get(m.Task, task_id)
-    if not task:
-        return _fail(f"Task {task_id} not found")
+    task, error = require_task_access(_ctx(), task_id)
+    if error:
+        return _fail(error)
 
     if title is not None:
         task.title = title
@@ -462,9 +622,9 @@ def update_task_status(task_id: str, new_status: str) -> dict:
     db = _get_db()
     m = _get_models()
 
-    task = db.session.get(m.Task, task_id)
-    if not task:
-        return _fail(f"Task {task_id} not found")
+    task, error = require_task_access(_ctx(), task_id)
+    if error:
+        return _fail(error)
 
     old_status = task.status
     task.status = new_status
@@ -481,9 +641,9 @@ def update_project(
     db = _get_db()
     m = _get_models()
 
-    project = db.session.get(m.Project, project_id)
-    if not project:
-        return _fail(f"Project {project_id} not found")
+    project, error = require_project_access(_ctx(), project_id)
+    if error:
+        return _fail(error)
 
     if name is not None:
         project.name = name
@@ -504,9 +664,9 @@ def delete_task(task_id: str) -> dict:
     db = _get_db()
     m = _get_models()
 
-    task = db.session.get(m.Task, task_id)
-    if not task:
-        return _fail(f"Task {task_id} not found")
+    task, error = require_task_access(_ctx(), task_id)
+    if error:
+        return _fail(error)
 
     title = task.title
     db.session.delete(task)
@@ -518,9 +678,9 @@ def delete_project(project_id: str) -> dict:
     db = _get_db()
     m = _get_models()
 
-    project = db.session.get(m.Project, project_id)
-    if not project:
-        return _fail(f"Project {project_id} not found")
+    project, error = require_project_access(_ctx(), project_id)
+    if error:
+        return _fail(error)
 
     m.Task.query.filter_by(project_id=project_id).delete()
     name = project.name
@@ -544,6 +704,9 @@ def _milestone_dict(ms) -> dict:
 
 def list_milestones(project_id: str) -> dict:
     m = _get_models()
+    _, error = require_project_access(_ctx(), project_id)
+    if error:
+        return _fail(error)
     milestones = m.Milestone.query.filter_by(project_id=project_id).order_by(m.Milestone.order).all()
     return _ok([_milestone_dict(ms) for ms in milestones])
 
@@ -556,9 +719,9 @@ def create_milestone(
     db = _get_db()
     m = _get_models()
 
-    project = db.session.get(m.Project, project_id)
-    if not project:
-        return _fail(f"Project {project_id} not found")
+    project, error = require_project_access(_ctx(), project_id)
+    if error:
+        return _fail(error)
 
     milestone = m.Milestone(
         project_id=project_id, title=title, description=description,
@@ -578,9 +741,9 @@ def update_milestone(
     db = _get_db()
     m = _get_models()
 
-    milestone = db.session.get(m.Milestone, milestone_id)
-    if not milestone:
-        return _fail(f"Milestone {milestone_id} not found")
+    milestone, error = require_milestone_access(_ctx(), milestone_id)
+    if error:
+        return _fail(error)
 
     if title is not None:
         milestone.title = title
@@ -601,9 +764,9 @@ def delete_milestone(milestone_id: str) -> dict:
     db = _get_db()
     m = _get_models()
 
-    milestone = db.session.get(m.Milestone, milestone_id)
-    if not milestone:
-        return _fail(f"Milestone {milestone_id} not found")
+    milestone, error = require_milestone_access(_ctx(), milestone_id)
+    if error:
+        return _fail(error)
 
     m.Task.query.filter_by(milestone_id=milestone_id).update({"milestone_id": None})
     title = milestone.title
@@ -627,6 +790,9 @@ def _sprint_dict(sp) -> dict:
 
 def list_sprints(project_id: str) -> dict:
     m = _get_models()
+    _, error = require_project_access(_ctx(), project_id)
+    if error:
+        return _fail(error)
     sprints = m.Sprint.query.filter_by(project_id=project_id).order_by(m.Sprint.created_at).all()
     return _ok([_sprint_dict(sp) for sp in sprints])
 
@@ -639,9 +805,9 @@ def create_sprint(
     db = _get_db()
     m = _get_models()
 
-    project = db.session.get(m.Project, project_id)
-    if not project:
-        return _fail(f"Project {project_id} not found")
+    project, error = require_project_access(_ctx(), project_id)
+    if error:
+        return _fail(error)
 
     sprint = m.Sprint(
         project_id=project_id, name=name,
@@ -662,9 +828,9 @@ def update_sprint(
     db = _get_db()
     m = _get_models()
 
-    sprint = db.session.get(m.Sprint, sprint_id)
-    if not sprint:
-        return _fail(f"Sprint {sprint_id} not found")
+    sprint, error = require_sprint_access(_ctx(), sprint_id)
+    if error:
+        return _fail(error)
 
     if name is not None:
         sprint.name = name
@@ -683,9 +849,9 @@ def delete_sprint(sprint_id: str) -> dict:
     db = _get_db()
     m = _get_models()
 
-    sprint = db.session.get(m.Sprint, sprint_id)
-    if not sprint:
-        return _fail(f"Sprint {sprint_id} not found")
+    sprint, error = require_sprint_access(_ctx(), sprint_id)
+    if error:
+        return _fail(error)
 
     m.Task.query.filter_by(sprint_id=sprint_id).update({"sprint_id": None})
     name = sprint.name
@@ -728,10 +894,15 @@ def add_task_dependency(task_id: str, depends_on_task_id: str, dependency_type: 
     if task_id == depends_on_task_id:
         return _fail("A task cannot depend on itself")
 
-    task = db.session.get(m.Task, task_id)
-    depends_on = db.session.get(m.Task, depends_on_task_id)
-    if not task or not depends_on:
-        return _fail("Task not found")
+    ctx = _ctx()
+    task, error = require_task_access(ctx, task_id)
+    if error:
+        return _fail(error)
+    depends_on, error = require_task_access(ctx, depends_on_task_id)
+    if error:
+        return _fail(error)
+    if task.workspace_id != depends_on.workspace_id:
+        return _fail("Dependency tasks must be in the same workspace")
 
     # Adding task_id -> depends_on_task_id would create a cycle if depends_on_task_id
     # can already (transitively) reach task_id via existing 'depends_on' edges.
@@ -757,6 +928,9 @@ def remove_task_dependency(dependency_id: str) -> dict:
     dep = db.session.get(m.TaskDependency, dependency_id)
     if not dep:
         return _fail(f"Dependency {dependency_id} not found")
+    _, error = require_task_access(_ctx(), dep.task_id)
+    if error:
+        return _fail(error)
 
     db.session.delete(dep)
     db.session.commit()
@@ -765,6 +939,9 @@ def remove_task_dependency(dependency_id: str) -> dict:
 
 def get_task_dependencies(task_id: str) -> dict:
     m = _get_models()
+    _, error = require_task_access(_ctx(), task_id)
+    if error:
+        return _fail(error)
 
     blocks = m.TaskDependency.query.filter_by(task_id=task_id).all()
     blocked_by = m.TaskDependency.query.filter_by(depends_on_task_id=task_id).all()
@@ -784,6 +961,9 @@ def get_task_dependencies(task_id: str) -> dict:
 
 def get_blocked_tasks(project_id: str) -> dict:
     m = _get_models()
+    _, error = require_project_access(_ctx(), project_id)
+    if error:
+        return _fail(error)
 
     tasks = {t.id: t for t in m.Task.query.filter_by(project_id=project_id).all()}
     deps = m.TaskDependency.query.filter(m.TaskDependency.task_id.in_(tasks.keys())).all()
@@ -818,6 +998,11 @@ def replan_project(project_id: str, workspace_id: str, user_id: str, goal: str) 
     project = db.session.get(m.Project, project_id)
     if not project:
         return _fail(f"Project {project_id} not found")
+    error = require_workspace_access(_ctx(), workspace_id)
+    if error:
+        return _fail(error)
+    if project.workspace_id != workspace_id:
+        return _fail("Project is outside the requested workspace")
 
     prompt = (
         f"Replan project '{project.name}' (project_id={project_id}): {goal}. "

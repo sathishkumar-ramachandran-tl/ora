@@ -10,12 +10,79 @@ occurrences on read — no per-occurrence rows are persisted except when materia
 schedule_module_milestones, which creates concrete one-off events instead.
 """
 import uuid
-from datetime import datetime, timedelta, time as dt_time
+from datetime import datetime, timedelta, time as dt_time, timezone as dt_timezone
 from typing import Optional
 
 from dateutil.rrule import rrulestr
+from sqlalchemy.exc import SQLAlchemyError
 
 from .task_tools import _ok, _fail, _get_db, _get_models
+
+
+VALID_EVENT_TYPES = {"task_block", "meeting", "personal", "reminder"}
+VALID_SCOPES = {"personal", "workspace", "company"}
+
+
+def _ctx():
+    try:
+        from ..agents.execution_context import get_execution_context
+        return get_execution_context(required=False)
+    except Exception:
+        return None
+
+
+def require_calendar_event_access(ctx, event_id: str, owner_required: bool = False):
+    db = _get_db()
+    m = _get_models()
+    event = db.session.get(m.CalendarEvent, event_id)
+    if not event:
+        return None, f"Event {event_id} not found"
+    if ctx is not None:
+        from .task_tools import require_workspace_access
+        error = require_workspace_access(ctx, event.workspace_id)
+        if error:
+            return None, error
+        if owner_required and event.owner_id != ctx.user_id:
+            return None, "Unauthorized: user does not own this calendar event"
+    return event, None
+
+
+def _normalize_dt(value: datetime) -> datetime:
+    """Store datetimes as naive UTC/local-compatible values, matching existing rows."""
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(dt_timezone.utc).replace(tzinfo=None)
+
+
+def _validate_event_window(start: datetime, end: datetime) -> Optional[str]:
+    if not isinstance(start, datetime) or not isinstance(end, datetime):
+        return "start and end must be datetime values"
+    if _normalize_dt(start) >= _normalize_dt(end):
+        return "Event end must be after start"
+    return None
+
+
+def _event_payload(event, status: str, operation_status: str = "succeeded", verified: bool = True) -> dict:
+    return {
+        "id": event.id,
+        "title": event.title,
+        "status": status,
+        "operationStatus": operation_status,
+        "verified": verified,
+    }
+
+
+def _find_duplicate_event(m, workspace_id: str, owner_id: str, title: str, start: datetime, end: datetime,
+                          task_id: Optional[str], recurrence_rule: Optional[str]):
+    return m.CalendarEvent.query.filter_by(
+        workspace_id=workspace_id,
+        owner_id=owner_id,
+        title=title.strip(),
+        start_time=_normalize_dt(start),
+        end_time=_normalize_dt(end),
+        task_id=task_id,
+        recurrence_rule=recurrence_rule,
+    ).first()
 
 
 def _expand_occurrences(event, window_start: datetime, window_end: datetime):
@@ -74,6 +141,14 @@ def _visible_event_ids(m, db, workspace_id: str, user_id: str, scope_filter: Opt
 def list_events(workspace_id: str, user_id: str, start: datetime, end: datetime, scope: Optional[str] = None) -> dict:
     db = _get_db()
     m = _get_models()
+    ctx = _ctx()
+
+    if ctx is not None:
+        from .task_tools import require_workspace_access
+        error = require_workspace_access(ctx, workspace_id)
+        if error:
+            return _fail(error)
+        user_id = ctx.user_id
 
     if not db.session.get(m.Workspace, workspace_id):
         return _fail(f"Workspace {workspace_id} not found")
@@ -108,16 +183,73 @@ def create_event(
 ) -> dict:
     db = _get_db()
     m = _get_models()
+    ctx = _ctx()
+
+    if ctx is not None:
+        from .task_tools import require_workspace_access
+        error = require_workspace_access(ctx, workspace_id)
+        if error:
+            return _fail(error)
+        if owner_id != ctx.user_id:
+            return _fail("Unauthorized: owner_id must match the trusted execution user")
+
+    if not db.session.get(m.Workspace, workspace_id):
+        return _fail(f"Workspace {workspace_id} not found")
+    if not owner_id or not db.session.get(m.User, owner_id):
+        return _fail(f"Owner {owner_id} not found")
+    if not title or not title.strip():
+        return _fail("Event title is required")
+    window_error = _validate_event_window(start, end)
+    if window_error:
+        return _fail(window_error)
+    if event_type not in VALID_EVENT_TYPES:
+        return _fail(f"Invalid event type '{event_type}'")
+    if scope not in VALID_SCOPES:
+        return _fail(f"Invalid event scope '{scope}'")
+    if attendees is not None and not isinstance(attendees, list):
+        return _fail("attendees must be a list of user IDs")
+    if task_id:
+        from .task_tools import require_task_access
+        _, task_error = require_task_access(ctx, task_id)
+        if task_error:
+            return _fail(task_error)
+        task = db.session.get(m.Task, task_id)
+        if not task or task.workspace_id != workspace_id:
+            return _fail(f"Task {task_id} not found in workspace {workspace_id}")
+    if scope == "company":
+        workspace = db.session.get(m.Workspace, workspace_id)
+        expected_org_id = organization_id or getattr(workspace, "organization_id", None)
+        if not expected_org_id:
+            return _fail("company-scope events require an organization_id or organization workspace")
+        organization_id = expected_org_id
+    if recurrence_rule:
+        try:
+            rrulestr(recurrence_rule, dtstart=_normalize_dt(start))
+        except (ValueError, TypeError) as exc:
+            return _fail(f"Invalid recurrence_rule: {exc}")
+
+    duplicate = _find_duplicate_event(m, workspace_id, owner_id, title, start, end, task_id, recurrence_rule)
+    if duplicate:
+        return _ok(_event_payload(duplicate, "already_exists"))
 
     event = m.CalendarEvent(
         id=str(uuid.uuid4()), workspace_id=workspace_id, owner_id=owner_id,
-        organization_id=organization_id, title=title, start_time=start, end_time=end,
+        organization_id=organization_id, title=title.strip(),
+        start_time=_normalize_dt(start), end_time=_normalize_dt(end),
         type=event_type, scope=scope, task_id=task_id, color=color, timezone=timezone,
         recurrence_rule=recurrence_rule, attendees=attendees or [],
     )
-    db.session.add(event)
-    db.session.commit()
-    return _ok({"id": event.id, "title": event.title, "status": "created"})
+    try:
+        db.session.add(event)
+        db.session.commit()
+    except SQLAlchemyError as exc:
+        db.session.rollback()
+        return _fail(f"Calendar event create failed: {exc.__class__.__name__}")
+
+    verified_event = db.session.get(m.CalendarEvent, event.id)
+    if not verified_event:
+        return _fail("Calendar event create outcome is unknown; verification failed")
+    return _ok(_event_payload(verified_event, "created"))
 
 
 def update_event(
@@ -127,32 +259,52 @@ def update_event(
     db = _get_db()
     m = _get_models()
 
-    event = db.session.get(m.CalendarEvent, event_id)
-    if not event:
-        return _fail(f"Event {event_id} not found")
+    event, error = require_calendar_event_access(_ctx(), event_id)
+    if error:
+        return _fail(error)
+
+    effective_start = _normalize_dt(start) if start is not None else event.start_time
+    effective_end = _normalize_dt(end) if end is not None else event.end_time
+    window_error = _validate_event_window(effective_start, effective_end)
+    if window_error:
+        return _fail(window_error)
+    if title is not None and not title.strip():
+        return _fail("Event title cannot be empty")
+    if scope is not None and scope not in VALID_SCOPES:
+        return _fail(f"Invalid event scope '{scope}'")
 
     if title is not None:
-        event.title = title
+        event.title = title.strip()
     if start is not None:
-        event.start_time = start
+        event.start_time = _normalize_dt(start)
     if end is not None:
-        event.end_time = end
+        event.end_time = _normalize_dt(end)
     if color is not None:
         event.color = color
     if scope is not None:
         event.scope = scope
 
-    db.session.commit()
-    return _ok({"id": event.id, "title": event.title, "status": "updated"})
+    try:
+        db.session.commit()
+    except SQLAlchemyError as exc:
+        db.session.rollback()
+        return _fail(f"Calendar event update failed: {exc.__class__.__name__}")
+
+    verified_event = db.session.get(m.CalendarEvent, event.id)
+    if not verified_event:
+        return _fail("Calendar event update outcome is unknown; verification failed")
+    if verified_event.start_time != effective_start or verified_event.end_time != effective_end:
+        return _fail("Calendar event update outcome is unknown; persisted time did not match request")
+    return _ok(_event_payload(verified_event, "updated"))
 
 
 def delete_event(event_id: str, delete_series: bool = False) -> dict:
     db = _get_db()
     m = _get_models()
 
-    event = db.session.get(m.CalendarEvent, event_id)
-    if not event:
-        return _fail(f"Event {event_id} not found")
+    event, error = require_calendar_event_access(_ctx(), event_id, owner_required=True)
+    if error:
+        return _fail(error)
 
     deleted_ids = [event.id]
     if delete_series:
@@ -175,8 +327,22 @@ def delete_event(event_id: str, delete_series: bool = False) -> dict:
     else:
         db.session.delete(event)
 
-    db.session.commit()
-    return _ok({"deletedEventIds": list(set(deleted_ids)), "status": "deleted"})
+    try:
+        db.session.commit()
+    except SQLAlchemyError as exc:
+        db.session.rollback()
+        return _fail(f"Calendar event delete failed: {exc.__class__.__name__}")
+
+    unique_deleted_ids = list(set(deleted_ids))
+    still_present = [eid for eid in unique_deleted_ids if db.session.get(m.CalendarEvent, eid)]
+    if still_present:
+        return _fail(f"Calendar event delete outcome is unknown; still present: {still_present}")
+    return _ok({
+        "deletedEventIds": unique_deleted_ids,
+        "status": "deleted",
+        "operationStatus": "succeeded",
+        "verified": True,
+    })
 
 
 def find_availability(
@@ -189,6 +355,12 @@ def find_availability(
     weekdays_only=True skips Saturday/Sunday days entirely."""
     db = _get_db()
     m = _get_models()
+
+    ctx = _ctx()
+    from .task_tools import require_workspace_access
+    error = require_workspace_access(ctx, workspace_id)
+    if error:
+        return _fail(error)
 
     duration = timedelta(minutes=duration_minutes)
     busy_intervals = []
@@ -238,6 +410,14 @@ def auto_schedule_tasks(
     optimizer, this never invents a schedule — every block comes from find_availability."""
     db = _get_db()
     m = _get_models()
+
+    ctx = _ctx()
+    from .task_tools import require_workspace_access
+    error = require_workspace_access(ctx, workspace_id)
+    if error:
+        return _fail(error)
+    if ctx is not None:
+        user_id = ctx.user_id
 
     if not db.session.get(m.Workspace, workspace_id):
         return _fail(f"Workspace {workspace_id} not found")
@@ -382,6 +562,14 @@ def schedule_module_milestones(module_instance_id: str, workspace_id: str, user_
     overlapping existing commitments. The concrete Phase-1/Phase-2 integration point."""
     db = _get_db()
     m = _get_models()
+
+    ctx = _ctx()
+    from .task_tools import require_workspace_access
+    error = require_workspace_access(ctx, workspace_id)
+    if error:
+        return _fail(error)
+    if ctx is not None:
+        user_id = ctx.user_id
 
     instance = db.session.get(m.ModuleInstance, module_instance_id)
     if not instance or instance.workspace_id != workspace_id:
