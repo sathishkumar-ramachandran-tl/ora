@@ -29,6 +29,10 @@ from .agents.models import (
 )
 from .billing.models import Plan, Subscription, PlanOverride, PromoCode, PromoRedemption, PlatformSetting
 from .modules.models import ModuleTemplate, ModuleTemplateVersion, ModuleInstance
+from .payments.models import (
+    AgentWallet, EconomicPolicy, CapabilityProvider, EconomicAction,
+    PaymentTransaction, EconomicEvidence,
+)
 from .core.models import RateLimitCounter
 
 __all__ = [
@@ -47,5 +51,7 @@ __all__ = [
     "ResearchEvidence", "CompetencyEvidence", "MasteryRecord", "PlanRevisionProposal",
     "ScheduleProposal", "PlanningSession", "LlmCall",
     "ModuleTemplate", "ModuleTemplateVersion", "ModuleInstance",
+    "AgentWallet", "EconomicPolicy", "CapabilityProvider", "EconomicAction",
+    "PaymentTransaction", "EconomicEvidence",
     "RateLimitCounter",
 ]

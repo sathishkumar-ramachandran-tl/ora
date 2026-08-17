@@ -25,6 +25,7 @@ from .agents.plan_routes import plan_bp
 from .chat.routes import chat_bp
 from .billing.routes import billing_bp
 from .modules.routes import module_bp
+from .payments.routes import payments_bp
 
 # Import every domain's models so they're registered on db.metadata before
 # db.create_all()/Alembic run, regardless of which blueprint imports first.
@@ -92,6 +93,7 @@ def create_app(config_class=Config):
     app.register_blueprint(org_bp, url_prefix='/api/v2/orgs')
     app.register_blueprint(billing_bp, url_prefix='/api/v2/billing')
     app.register_blueprint(module_bp, url_prefix='/api/v2/modules')
+    app.register_blueprint(payments_bp, url_prefix='/api/v2/payments')
 
     # -----------------------------------------------------------------------
     # A2A (Agent-to-Agent) Protocol Endpoints
@@ -261,5 +263,15 @@ def create_app(config_class=Config):
             seed_plans()
         except Exception as e:
             app.logger.warning(f"Billing plan seed skipped: {e}")
+
+    # Idempotent — inserts the demo capability-provider catalog only for capabilities
+    # that have no providers registered yet, so the Agent Economy has something to
+    # discover/select from out of the box.
+    with app.app_context():
+        try:
+            from .payments.discovery import seed_default_providers
+            seed_default_providers()
+        except Exception as e:
+            app.logger.warning(f"Capability provider seed skipped: {e}")
 
     return app

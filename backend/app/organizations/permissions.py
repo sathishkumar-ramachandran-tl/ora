@@ -36,6 +36,8 @@ PERMISSIONS = {
     "task.approve": "Approve tasks marked for review",
     "document.manage": "Upload and delete documents in the vault",
     "calendar.manage_org": "Create/edit organization- and team-scope calendar events",
+    "payments.manage": "Manage the workspace's Circle agent wallet and spending policy",
+    "payments.approve": "Approve or reject autonomous purchases pending manual review",
 }
 
 # Default permission sets for the coarse `role` tiers, used when a member has no
@@ -46,6 +48,7 @@ _DEFAULT_ADMIN_PERMISSIONS = [
     "project.create", "project.manage", "project.delete", "project.view_financials",
     "task.create", "task.manage", "task.delete", "task.approve",
     "document.manage", "calendar.manage_org",
+    "payments.manage", "payments.approve",
 ]
 _DEFAULT_MEMBER_PERMISSIONS = [
     "org.view_members",

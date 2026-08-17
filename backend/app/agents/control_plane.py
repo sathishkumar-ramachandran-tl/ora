@@ -104,6 +104,12 @@ ACTION_METADATA: dict[str, dict[str, Any]] = {
     "action.undo": {"risk": RiskLevel.MEDIUM, "mutation": True, "confirmation_required": False},
     "task_dependency.create": {"risk": RiskLevel.MEDIUM, "mutation": True, "confirmation_required": False},
     "task_dependency.delete": {"risk": RiskLevel.MEDIUM, "mutation": True, "confirmation_required": False},
+    # HIGH risk (real money movement) but NOT statically confirmation_required — unlike
+    # every other HIGH-risk action type here, per-transaction confirmation for a
+    # payment is a dynamic decision made by the economic policy engine
+    # (app/payments/policy.py), which varies by amount/workspace config rather than
+    # being fixed per action type. See payments/service.py's PolicyDecision handling.
+    "payment.capability.acquire": {"risk": RiskLevel.HIGH, "mutation": True, "confirmation_required": False},
 }
 
 

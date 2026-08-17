@@ -91,6 +91,28 @@ class Config:
     RATE_LIMIT_MUTATION_PER_MINUTE = int(os.environ.get('RATE_LIMIT_MUTATION_PER_MINUTE', '120'))
     RATE_LIMIT_READ_PER_MINUTE = int(os.environ.get('RATE_LIMIT_READ_PER_MINUTE', '300'))
 
+    # --- Circle Agent Wallet (Agentic Economy / USDC payments) ---
+    # Without CIRCLE_API_KEY set, app/payments/circle_client.py runs in simulation
+    # mode: wallets/transfers are deterministic local fixtures (clearly flagged
+    # is_simulated=True everywhere) so the full acquire-capability loop is exercisable
+    # without live credentials. Set these to switch to Circle's real Developer-
+    # Controlled Wallets API via Circle's official Python SDK.
+    CIRCLE_API_KEY = os.environ.get('CIRCLE_API_KEY')
+    CIRCLE_API_BASE_URL = os.environ.get('CIRCLE_API_BASE_URL', 'https://api-sandbox.circle.com')
+    # The RAW 32-byte entity secret as a 64-char hex string — generate it yourself
+    # (e.g. `python -c "import secrets; print(secrets.token_hex(32))"`) and REGISTER it
+    # with Circle once (see backend/register_entity_secret.py) before first use. The
+    # Circle Python SDK re-encrypts this into a fresh, single-use ciphertext on every
+    # call automatically — circle_client.py never handles that encryption itself.
+    CIRCLE_ENTITY_SECRET = os.environ.get('CIRCLE_ENTITY_SECRET')
+    CIRCLE_WALLET_SET_ID = os.environ.get('CIRCLE_WALLET_SET_ID')
+    CIRCLE_BLOCKCHAIN = os.environ.get('CIRCLE_BLOCKCHAIN', 'MATIC-AMOY')  # sandbox default
+    # The USDC ERC-20/token contract address on CIRCLE_BLOCKCHAIN (not a Circle "token
+    # ID" — Circle's real transfer API takes tokenAddress, confirmed against their
+    # "Send tokens across wallets" guide).
+    CIRCLE_USDC_TOKEN_ADDRESS = os.environ.get('CIRCLE_USDC_TOKEN_ADDRESS')
+    CIRCLE_WEBHOOK_SECRET = os.environ.get('CIRCLE_WEBHOOK_SECRET')
+
     # --- Google Cloud Storage (Document Vault) ---
     GCS_BUCKET_NAME = os.environ.get('GCS_BUCKET_NAME')
     # GOOGLE_APPLICATION_CREDENTIALS (path to a service-account JSON key) is read directly

@@ -52,6 +52,17 @@ restricted.
 Organization/team routes use membership and role checks. Platform-admin billing routes
 require explicit platform admin status.
 
+## Agent Economy (Circle / USDC)
+
+`/api/v2/payments/workspaces/<id>/*`, `/api/v2/payments/capabilities`
+
+Workspace-scoped wallet, spending policy, capability discovery, autonomous purchase
+activity (`EconomicAction`), and transactions. Read endpoints require workspace
+membership; wallet/policy mutation and purchase approval require the `payments.manage`
+/ `payments.approve` organization permissions (or workspace ownership). Circle
+credentials and payment execution never leave the backend — see
+`app/payments/circle_client.py`.
+
 ## Error Model
 
 Current APIs return JSON objects with an `error` string for failures. Common status

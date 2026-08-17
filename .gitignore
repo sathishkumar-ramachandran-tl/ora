@@ -4,6 +4,10 @@ backend/token.json
 **/credentials.json
 **/token.json
 
+# --- Secrets: Circle entity-secret recovery files ---
+backend/recovery/
+**/recovery/
+
 # --- Env files ---
 .env
 .env.*

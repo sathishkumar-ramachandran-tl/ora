@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Optional
 from langchain_core.tools import tool
 
-from ..tools import task_tools, calendar_tools, module_tools
+from ..tools import task_tools, calendar_tools, module_tools, payment_tools
 from ..calendar.service import CalendarService, serialize_event
 from .action_executor import execute_action
 from .execution_context import get_execution_context
@@ -724,6 +724,38 @@ def get_blocked_tasks(project_id: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# AGENT ECONOMY — autonomous capability purchase (Circle/USDC)
+# ---------------------------------------------------------------------------
+
+@tool
+def acquire_capability(capability: str, task: str, reason: str = "",
+                        max_cost_usdc: Optional[float] = None,
+                        max_latency_ms: Optional[int] = None) -> dict:
+    """
+    Autonomously acquire an external capability/service the workspace doesn't have
+    in-house, paying for it in USDC via the workspace's Circle agent wallet, when doing
+    so is required to complete the user's goal. Examples of capability names:
+    "competitor_research", "web_research", "data_extraction", "sentiment_analysis".
+
+    This does NOT execute a payment itself — it runs the full acquire pipeline
+    (discover providers, select one, check the workspace's spending policy, pay via
+    Circle, call the provider, verify the result) and only ever moves money if policy
+    allows it. If the price requires manual approval, this returns an error explaining
+    that and the economic_action_id to approve; do not retry the same purchase in a
+    loop hoping it becomes auto-approved. `reason` should briefly explain why this
+    capability is needed for the current task — it becomes user-visible evidence of
+    why Ora spent money. Use `max_cost_usdc`/`max_latency_ms` to bound what an
+    acceptable provider looks like when the user gave a budget.
+    """
+    # Not routed through _execute()/execute_action here: the actual money-moving
+    # mutation (the Circle transfer) is already audited at the correct granularity one
+    # level down, inside payments/service.py's acquire_capability -> _execute_payment.
+    # Wrapping this whole multi-step pipeline in a second AgentAction would duplicate
+    # the audit trail and burn two of the 20-tool-calls-per-run budget for one purchase.
+    return _unwrap(payment_tools.acquire_capability(capability, task, reason, max_cost_usdc, max_latency_ms))
+
+
+# ---------------------------------------------------------------------------
 # Tool registries by agent role
 # ---------------------------------------------------------------------------
 
@@ -749,6 +781,8 @@ CALENDAR_TOOLS = [
 
 MODULE_TOOLS = [list_modules, generate_module, get_module_progress, install_module]
 
+PAYMENT_TOOLS = [acquire_capability]
+
 # Milestones/sprints/dependencies. Deliberately excludes replan_project (task_tools.py) —
 # that invokes the Core Intelligence Layer's own compiled graph, so it must only be
 # reachable via the dedicated /projects/<id>/replan route and MCP tool, never as a tool
@@ -763,5 +797,5 @@ PM_TOOLS = [
 # this, so no agent path is missing calendar/module/PM capability the way the old
 # query/crud/analysis agents were (they only ever saw READ_TOOLS + CRUD_TOOLS).
 ALL_TOOLS = list({
-    t.name: t for t in READ_TOOLS + CRUD_TOOLS + CALENDAR_TOOLS + MODULE_TOOLS + PM_TOOLS
+    t.name: t for t in READ_TOOLS + CRUD_TOOLS + CALENDAR_TOOLS + MODULE_TOOLS + PM_TOOLS + PAYMENT_TOOLS
 }.values())

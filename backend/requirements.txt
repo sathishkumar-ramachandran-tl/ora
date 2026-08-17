@@ -25,6 +25,9 @@ boto3>=1.34.0            # Amazon SES (all transactional email)
 Authlib>=1.3.0            # OAuth2 client (Google, Microsoft sign-in)
 requests>=2.31.0          # used by Authlib's Flask integration
 
+# === CIRCLE (Agent Wallet / Agentic Economy) ===
+circle-developer-controlled-wallets>=9.6.0   # official SDK: wallets, wallet sets, transfers, entity-secret handling
+
 # === BILLING ===
 stripe>=9.0.0
 

@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { Sparkles, Download, CheckCircle2, Loader2, Pencil, Search, LayoutGrid, PackageOpen } from 'lucide-react';
+import { Sparkles, Download, CheckCircle2, Loader2, Pencil, Search, LayoutGrid, PackageOpen, Zap } from 'lucide-react';
 import { browseModules, getMyModules, publishModule, installModule } from '../../api/modules';
 import { ModuleSummary, ModuleCategory, Company } from '../../types';
 import { ModuleGenerationDialog } from './ModuleGenerationDialog';
 import { ModuleReviewScreen } from './ModuleReviewScreen';
 import { InitiativePicker } from './InitiativePicker';
 import { CATEGORY_VISUALS, DIFFICULTY_LABEL, DIFFICULTY_DOT } from './moduleVisuals';
+import { AgentEconomyDashboard } from '../payments/AgentEconomyDashboard';
 
 interface ModuleMarketplaceProps {
   workspaceId: string;
@@ -44,6 +45,7 @@ export const ModuleMarketplace: React.FC<ModuleMarketplaceProps> = ({ workspaceI
   const [pickingInitiativeFor, setPickingInitiativeFor] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [activeFilter, setActiveFilter] = useState<ModuleCategory | 'all'>('all');
+  const [section, setSection] = useState<'marketplace' | 'economy'>('marketplace');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -91,6 +93,30 @@ export const ModuleMarketplace: React.FC<ModuleMarketplaceProps> = ({ workspaceI
 
   return (
     <div className="max-w-6xl mx-auto space-y-8 pb-16">
+      {/* Section switch */}
+      <div className="flex items-center gap-1 bg-slate-100/80 rounded-xl p-1 w-fit">
+        <button
+          onClick={() => setSection('marketplace')}
+          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+            section === 'marketplace' ? 'bg-white text-slate-900 shadow-[0_1px_2px_rgba(15,23,42,0.08)]' : 'text-slate-500 hover:text-slate-700'
+          }`}
+        >
+          <LayoutGrid size={13} /> Marketplace
+        </button>
+        <button
+          onClick={() => setSection('economy')}
+          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+            section === 'economy' ? 'bg-white text-slate-900 shadow-[0_1px_2px_rgba(15,23,42,0.08)]' : 'text-slate-500 hover:text-slate-700'
+          }`}
+        >
+          <Zap size={13} /> Agent Economy
+        </button>
+      </div>
+
+      {section === 'economy' && <AgentEconomyDashboard workspaceId={workspaceId} />}
+
+      {section === 'marketplace' && (
+      <>
       {/* Command surface */}
       <div className="rounded-2xl border border-slate-200/70 bg-gradient-to-br from-white to-slate-50 shadow-[0_1px_2px_rgba(15,23,42,0.04),0_12px_32px_-16px_rgba(15,23,42,0.12)] p-6">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
@@ -283,6 +309,8 @@ export const ModuleMarketplace: React.FC<ModuleMarketplaceProps> = ({ workspaceI
             handleInstall(moduleTemplateId, companyId);
           }}
         />
+      )}
+      </>
       )}
     </div>
   );

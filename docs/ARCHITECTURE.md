@@ -28,6 +28,8 @@ Primary domains:
   mastery, adaptation, undo, and deterministic action execution.
 - `organizations/`: organization membership, custom roles, RBAC helpers.
 - `documents/`: metadata, upload/download/delete boundaries, GCS storage wrapper.
+- `payments/`: Circle Agent Wallet, capability discovery/selection, economic policy
+  engine, EconomicAction lifecycle, USDC payment execution, verification, evidence.
 - `core/`: config, extensions, logging, authz, security primitives, rate limiting.
 
 Dependency direction:
@@ -85,3 +87,8 @@ authoritative for user ID, workspace ID, scope, tool identity, and authorization
   updates.
 - Documents: upload request -> workspace authz -> filename/type/size validation -> GCS
   storage -> document metadata.
+- Agent Economy: agent needs a capability -> capability discovery -> provider
+  selection -> EconomicAction (proposed) -> economic policy check -> [rejected |
+  needs user approval | approved] -> Circle USDC payment via the same ActionExecutor
+  choke point as every other mutation -> external provider call (untrusted response)
+  -> result verification -> EconomicEvidence. See `app/payments/service.py`.

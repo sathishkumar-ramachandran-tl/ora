@@ -295,3 +295,108 @@ export interface ModuleInstance {
   totalTasks: number;
   completedTasks: number;
 }
+
+// --- Agent Economy (Circle / USDC autonomous capability purchases) ---
+
+export type EconomicActionStatus =
+  | 'PROPOSED' | 'POLICY_CHECK' | 'APPROVED' | 'REJECTED'
+  | 'PAYMENT_PENDING' | 'PAID' | 'PAYMENT_FAILED'
+  | 'SERVICE_EXECUTING' | 'SERVICE_FAILED'
+  | 'RESULT_RECEIVED' | 'VERIFIED' | 'VERIFICATION_FAILED'
+  | 'REFUND_PENDING' | 'CANCELLED';
+
+export type PolicyDecisionType = 'APPROVED' | 'REQUIRES_USER_APPROVAL' | 'REJECTED';
+
+export interface AgentWalletInfo {
+  exists: boolean;
+  id?: string;
+  address?: string;
+  blockchain?: string;
+  status?: string;
+  isSimulated?: boolean;
+  supportedChains?: string[];
+  balance?: { amount: number; currency: string };
+}
+
+export interface EconomicPolicySettings {
+  perTransactionLimitUsdc: number;
+  dailyLimitUsdc: number | null;
+  monthlyLimitUsdc: number | null;
+  autoApproveThresholdUsdc: number;
+  allowedCapabilityCategories: string[];
+  allowedProviders: string[];
+  blockedProviders: string[];
+  requireConfirmationAboveThreshold: boolean;
+  emergencyStop: boolean;
+}
+
+export interface SpendingSummary {
+  today_usdc: number;
+  month_usdc: number;
+  daily_limit_usdc: number | null;
+  monthly_limit_usdc: number | null;
+  remaining_today_usdc: number | null;
+}
+
+export interface CapabilityProviderInfo {
+  id: string;
+  capability: string;
+  name: string;
+  provider: string;
+  description: string;
+  priceUsdc: number;
+  currency: string;
+  chain: string;
+  estimatedLatencyMs: number;
+  successRate: number;
+  isActive: boolean;
+}
+
+export interface EconomicActionSummary {
+  id: string;
+  capability: string;
+  task: string;
+  reason: string;
+  provider: { id: string; name: string; provider: string } | null;
+  amountUsdc: number;
+  status: EconomicActionStatus;
+  policyDecision: { decision: PolicyDecisionType; reasons: string[] } | null;
+  verificationStatus: string | null;
+  qualityScore: number | null;
+  latencyMs: number | null;
+  errorMessage: string | null;
+  createdAt: string | null;
+  completedAt: string | null;
+}
+
+export interface EconomicEvidenceDetail {
+  id: string;
+  userGoal: string | null;
+  providerName: string;
+  priceUsdc: number;
+  circleWalletAddress: string | null;
+  circleTransactionId: string | null;
+  transactionHash: string | null;
+  explorerUrl: string | null;
+  serviceResultSummary: Record<string, unknown>;
+  verificationStatus: string | null;
+  qualityScore: number | null;
+  latencyMs: number | null;
+  createdAt: string | null;
+}
+
+export interface EconomicActionDetail extends EconomicActionSummary {
+  evidence: EconomicEvidenceDetail | null;
+}
+
+export interface PaymentTransactionSummary {
+  id: string;
+  economicActionId: string;
+  amountUsdc: number;
+  status: string;
+  chain: string;
+  transactionHash: string | null;
+  explorerUrl: string | null;
+  isSimulated: boolean;
+  createdAt: string | null;
+}
